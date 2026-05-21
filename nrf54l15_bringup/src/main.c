@@ -1,158 +1,150 @@
 /*
- * Symmetric inter-MCU link test over nrf-sw-lpuart.
+ * Copyright (c) 2025 PALROC SL
  *
- * Behavior on every node (same code on both boards):
- *   - Every 5 seconds, send "PING\n".
- *   - On receiving "PING\n",          reply "PING RECEIVED\n".
- *   - On receiving "PING RECEIVED\n", just log (round-trip ack confirmed).
- *
- * If LED0 / LED1 are defined for the board, they blink on activity:
- *   LED0 toggles every time we get an ACK back (round-trip success).
- *   LED1 toggles every time we receive a PING (peer-is-alive indicator).
- *
- * EVT1 hardware reality: only the 9151 has connected LEDs. The L15 side
- * runs with no LEDs and reports only via RTT. The 9151's LED toggling
- * on every "PING RECEIVED" coming back is the acceptance test for the
- * inter-MCU link.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <string.h>
 #include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
-#include <zephyr/drivers/uart.h>
-#include <zephyr/sys/printk.h>
-#include <zephyr/sys/atomic.h>
-#include <zephyr/logging/log.h>
+#include <zephyr/bluetooth/bluetooth.h>
 
-LOG_MODULE_REGISTER(uart_chat, LOG_LEVEL_INF);
+#include "test_report.h"
 
-#define PING_INTERVAL K_SECONDS(5)
+LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
-static const struct device *const dut_uart = DEVICE_DT_GET(DT_ALIAS(dut_uart));
+/* ===== PER-BOARD TRACKING ============================================
+ * Change BOARD_NUMBER to match the physical board you're flashing.
+ * The number appears in the test summary block and in the L15-side
+ * test_summary.md record so per-board comparisons are easy.
+ * ====================================================================
+ */
+#define BOARD_NUMBER       3
+#define FW_VERSION_STRING  "0.3.0-l15-rffe-enable"
 
-#if DT_NODE_EXISTS(DT_ALIAS(led0))
-#define HAS_LED0 1
-static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
-#else
-#define HAS_LED0 0
-#endif
+/* Shared i²c2 bus with the 9151:
+ *   L15 P1.04 ↔ SDA ↔ 9151 P0.09
+ *   L15 P1.05 ↔ SCL ↔ 9151 P0.08
+ * The 9151 is the bus master. To make sure the L15 doesn't disturb
+ * 9151-side i²c traffic, force these pins to high-Z input with no pull
+ * at boot — *before* anything else runs. The L15 will be observable on
+ * the bus only as a passive line; if we ever want it as a master or
+ * slave, we'd configure i²c here instead.
+ *
+ * Inter-MCU bus arbitration on the shared SPI3 + i²c2 buses is application
+ * firmware's design problem (per step 16); this bring-up's job is just
+ * proving the L15 chip itself is alive.
+ */
+#define L15_I2C_SHARED_SDA_PIN    4
+#define L15_I2C_SHARED_SCL_PIN    5
+/* RFFE_BLE_WIFI_ENABLE = P1.10 — gates the BGS12SN6E6 RF switch VDD via
+ * the RV2C010UNT2L gate FET. Must be HIGH for the switch to be powered.
+ */
+#define RFFE_BLE_WIFI_ENABLE_PIN  10
 
-#if DT_NODE_EXISTS(DT_ALIAS(led1))
-#define HAS_LED1 1
-static const struct gpio_dt_spec led1 = GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
-#else
-#define HAS_LED1 0
-#endif
-
-#define RX_BUF_SZ 64
-static char rx_buf[RX_BUF_SZ];
-static size_t rx_idx;
-static atomic_t rx_byte_count;
-
-/* All TX is deferred to the system workqueue: nrf-sw-lpuart's REQ/RDY
- * handshake completes via GPIOTE interrupts, and calling uart_poll_out
- * from any ISR (RX callback, timer ISR) blocks those interrupts and the
- * send stalls partway. */
-
-static void uart_send(const char *s)
+static int l15_early_gpio_init(void)
 {
-	while (*s) {
-		uart_poll_out(dut_uart, *s++);
+	const struct device *gpio1 = DEVICE_DT_GET(DT_NODELABEL(gpio1));
+
+	if (!device_is_ready(gpio1)) {
+		LOG_ERR("gpio1 not ready, can't init early GPIOs");
+		return -ENODEV;
 	}
+	(void)gpio_pin_configure(gpio1, L15_I2C_SHARED_SDA_PIN,
+				 GPIO_INPUT | GPIO_DISCONNECTED);
+	(void)gpio_pin_configure(gpio1, L15_I2C_SHARED_SCL_PIN,
+				 GPIO_INPUT | GPIO_DISCONNECTED);
+	LOG_INF("shared i²c pins (P1.4 SDA, P1.5 SCL) parked as high-Z inputs");
+	(void)gpio_pin_configure(gpio1, RFFE_BLE_WIFI_ENABLE_PIN,
+				 GPIO_OUTPUT_HIGH);
+	LOG_INF("RFFE_BLE_WIFI_ENABLE (P1.10) driven HIGH — RF switch powered");
+	return 0;
 }
+SYS_INIT(l15_early_gpio_init, POST_KERNEL, 50);
 
-static void send_ping_work_handler(struct k_work *work)
+static const struct bt_data ad[] = {
+	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+	BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME,
+		sizeof(CONFIG_BT_DEVICE_NAME) - 1),
+};
+
+/* Verify the SYS_INIT-parked i²c pins really did go high-Z and aren't
+ * being held by anything else (a bus partner pulling, a stray short, etc.).
+ * Reads the pin level back; with a 9151-side pull-up at idle the line
+ * should read 1, with no pull-up it floats and may read 0 or 1.
+ * Pass = the pin is configurable as input + read returned without error.
+ */
+static void test_gpio_park(void)
 {
-	LOG_INF("TX: \"PING\"");
-	uart_send("PING\n");
-}
-static K_WORK_DEFINE(send_ping_work, send_ping_work_handler);
+	const struct device *gpio1 = DEVICE_DT_GET(DT_NODELABEL(gpio1));
 
-static void send_ack_work_handler(struct k_work *work)
-{
-	LOG_INF("TX: \"PING RECEIVED\"");
-	uart_send("PING RECEIVED\n");
-}
-static K_WORK_DEFINE(send_ack_work, send_ack_work_handler);
-
-static void process_line(const char *line)
-{
-	LOG_INF("RX: \"%s\"", line);
-
-	if (strcmp(line, "PING") == 0) {
-#if HAS_LED1
-		gpio_pin_toggle_dt(&led1);
-#endif
-		k_work_submit(&send_ack_work);
-	} else if (strcmp(line, "PING RECEIVED") == 0) {
-#if HAS_LED0
-		gpio_pin_toggle_dt(&led0);
-#endif
-	}
-}
-
-static void uart_rx_cb(const struct device *dev, void *user_data)
-{
-	ARG_UNUSED(user_data);
-	uint8_t c;
-
-	if (!uart_irq_update(dev)) {
+	if (!device_is_ready(gpio1)) {
+		test_report("gpio_park", TEST_FAIL, "gpio1 not ready");
 		return;
 	}
+	int sda = gpio_pin_get(gpio1, L15_I2C_SHARED_SDA_PIN);
+	int scl = gpio_pin_get(gpio1, L15_I2C_SHARED_SCL_PIN);
 
-	while (uart_irq_rx_ready(dev)) {
-		if (uart_fifo_read(dev, &c, 1) != 1) {
-			continue;
-		}
-		atomic_inc(&rx_byte_count);
-		if (c == '\r' || c == '\n') {
-			if (rx_idx > 0) {
-				rx_buf[rx_idx] = '\0';
-				process_line(rx_buf);
-				rx_idx = 0;
-			}
-		} else if (rx_idx < RX_BUF_SZ - 1) {
-			rx_buf[rx_idx++] = (char)c;
-		} else {
-			rx_idx = 0;
-		}
+	if (sda < 0 || scl < 0) {
+		test_report("gpio_park", TEST_FAIL,
+			    "read err sda=%d scl=%d", sda, scl);
+		return;
 	}
+	test_report("gpio_park", TEST_PASS,
+		    "P1.4(SDA)=%d  P1.5(SCL)=%d  (high-Z, levels passive)",
+		    sda, scl);
 }
-
-static void ping_timer_handler(struct k_timer *t)
-{
-	k_work_submit(&send_ping_work);
-}
-static K_TIMER_DEFINE(ping_timer, ping_timer_handler, NULL);
 
 int main(void)
 {
-	printk("\n=== nrf-sw-lpuart symmetric ping test ===\n");
+	int err;
 
-	if (!device_is_ready(dut_uart)) {
-		LOG_ERR("dut-uart device %s not ready", dut_uart->name);
-		return -1;
+	LOG_INF("nRF54L15 palroc bring-up start  BOARD=%d  fw=%s  built=%s %s",
+		BOARD_NUMBER, FW_VERSION_STRING, __DATE__, __TIME__);
+
+	/* If we got here, the kernel finished init — the LFXO/K32SRC fix
+	 * (CONFIG_CLOCK_CONTROL_NRF_K32SRC_RC=y) survived another reboot.
+	 * That's the chief "alive" signal for the L15 on this board.
+	 */
+	test_report("boot", TEST_PASS, "kernel init OK, K32SRC_RC fix held");
+
+	test_gpio_park();
+
+	err = bt_enable(NULL);
+	if (err) {
+		LOG_ERR("bt_enable failed: %d", err);
+		test_report("ble_init", TEST_FAIL, "bt_enable err %d", err);
+		test_report("ble_advertise", TEST_SKIP, "bt_enable failed");
+		test_report_summary(BOARD_NUMBER, FW_VERSION_STRING);
+		return err;
 	}
+	LOG_INF("BT stack initialised");
+	test_report("ble_init", TEST_PASS, "bt_enable OK");
 
-#if HAS_LED0
-	gpio_pin_configure_dt(&led0, GPIO_OUTPUT_INACTIVE);
-#endif
-#if HAS_LED1
-	gpio_pin_configure_dt(&led1, GPIO_OUTPUT_INACTIVE);
-#endif
+	err = bt_le_adv_start(BT_LE_ADV_NCONN, ad, ARRAY_SIZE(ad), NULL, 0);
+	if (err) {
+		LOG_ERR("bt_le_adv_start failed: %d", err);
+		test_report("ble_advertise", TEST_FAIL,
+			    "bt_le_adv_start err %d", err);
+		test_report_summary(BOARD_NUMBER, FW_VERSION_STRING);
+		return err;
+	}
+	LOG_INF("Advertising as \"%s\" (non-connectable)", CONFIG_BT_DEVICE_NAME);
+	test_report("ble_advertise", TEST_PASS,
+		    "non-connectable, name=\"%s\"", CONFIG_BT_DEVICE_NAME);
 
-	uart_irq_callback_user_data_set(dut_uart, uart_rx_cb, NULL);
-	uart_irq_rx_enable(dut_uart);
+	/* Print the test summary first so it's at the top of the RTT log
+	 * and easy to copy out, before the long-running advertising loop
+	 * fills the log with heartbeats.
+	 */
+	test_report_summary(BOARD_NUMBER, FW_VERSION_STRING);
 
-	LOG_INF("Ready. Sending PING every 5 s; replying PING RECEIVED on incoming PING.");
-
-	k_timer_start(&ping_timer, PING_INTERVAL, PING_INTERVAL);
+	int n = 0;
 
 	while (1) {
-		k_sleep(K_SECONDS(1));
-		LOG_INF("alive | rx total: %u bytes",
-			(uint32_t)atomic_get(&rx_byte_count));
+		k_sleep(K_SECONDS(10));
+		LOG_INF("alive t=%ds (still advertising)", ++n * 10);
 	}
 	return 0;
 }

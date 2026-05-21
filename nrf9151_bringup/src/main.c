@@ -1,158 +1,243 @@
 /*
- * Symmetric inter-MCU link test over nrf-sw-lpuart.
+ * Copyright (c) 2016 Intel Corporation
  *
- * Behavior on every node (same code on both boards):
- *   - Every 5 seconds, send "PING\n".
- *   - On receiving "PING\n",          reply "PING RECEIVED\n".
- *   - On receiving "PING RECEIVED\n", just log (round-trip ack confirmed).
- *
- * If LED0 / LED1 are defined for the board, they blink on activity:
- *   LED0 toggles every time we get an ACK back (round-trip success).
- *   LED1 toggles every time we receive a PING (peer-is-alive indicator).
- *
- * EVT1 hardware reality: only the 9151 has connected LEDs. The L15 side
- * runs with no LEDs and reports only via RTT. The 9151's LED toggling
- * on every "PING RECEIVED" coming back is the acceptance test for the
- * inter-MCU link.
+ * SPDX-License-Identifier: Apache-2.0
  */
 
-#include <string.h>
 #include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
-#include <zephyr/drivers/uart.h>
-#include <zephyr/sys/printk.h>
-#include <zephyr/sys/atomic.h>
-#include <zephyr/logging/log.h>
 
-LOG_MODULE_REGISTER(uart_chat, LOG_LEVEL_INF);
+#include "diag.h"
+#include "leds.h"
+#include "i2c_probe.h"
+#include "npm1300.h"
+#include "spi_probe.h"
+#include "modem.h"
+#include "gnss.h"
+#include "wifi_probe.h"
+#include "button_probe.h"
+#include "test_report.h"
 
-#define PING_INTERVAL K_SECONDS(5)
+LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
-static const struct device *const dut_uart = DEVICE_DT_GET(DT_ALIAS(dut_uart));
+/* Long initial pause AFTER the reset-reason print, so a host reconnecting
+ * RTT after a silent reset has plenty of time to attach and capture the
+ * cause line before any further activity buries it.
+ */
+#define POST_RESET_HOLD_MS 5000
+#define BOOT_SETTLE_MS     500
+#define INTER_PHASE_MS     100
 
-#if DT_NODE_EXISTS(DT_ALIAS(led0))
-#define HAS_LED0 1
-static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
-#else
-#define HAS_LED0 0
-#endif
+/* Set to 1 to run a multi-band sweep instead of the single-band
+ * low-power attach. The sweep iterates the bands[] array at the top of
+ * modem_band_sweep() in modem.c, with a 90 s timeout per band, and logs
+ * which ones attach + signal quality on each.
+ */
+#define RUN_BAND_SWEEP 0
 
-#if DT_NODE_EXISTS(DT_ALIAS(led1))
-#define HAS_LED1 1
-static const struct gpio_dt_spec led1 = GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
-#else
-#define HAS_LED1 0
-#endif
+/* Set to 1 to run the GNSS probe (COEX0 LNA gate + CFUN=31 + continuous
+ * tracking + per-5s satellite/CN0/fix log) right after modem_probe() and
+ * BEFORE the LTE attach/sweep, with the modem returned to CFUN=0 at the
+ * end so the LTE phase starts clean. Default 0 because indoor first fix
+ * can take minutes; turn on when validating the antenna/LNA path or with
+ * line-of-sight to the sky.
+ */
+#define RUN_GNSS_PROBE       0
+#define GNSS_PROBE_DURATION  300
 
-#define RX_BUF_SZ 64
-static char rx_buf[RX_BUF_SZ];
-static size_t rx_idx;
-static atomic_t rx_byte_count;
+/* SPI3 bus contention test: the nRF54L15 shares SPI3 lines (SCK/MOSI/MISO)
+ * with the W25Q128JV flash and LSM6DSO IMU on this board. If the L15 is
+ * booting (10 kΩ pull-up on its nRESET keeps it out of reset by default)
+ * and its GPIOs do anything to those lines, we'd see exactly the corrupt-
+ * but-deterministic SPI reads we observed (board#2=00s, board#1=17s).
+ * Setting this to 1 drives 9151 P0.19 LOW, holding the L15 in reset and
+ * leaving its GPIOs high-Z, so SPI3 becomes uncontested.
+ *
+ * Default 1 while debugging the SPI3 issue. Flip to 0 to bring the L15
+ * back up (its 10 kΩ pull-up will hold nRESET high once we stop driving
+ * P0.19 low).
+ */
+/* Set to 1 to drive P0.19 LOW (overriding the 10 kΩ pull-up on the L15
+ * nRESET) so the L15 stays in reset and its GPIOs go high-Z. Used for
+ * SPI3 bus contention debugging — leave at 0 once you actually want the
+ * L15 to boot.
+ */
+#define HOLD_L15_IN_RESET 0
+#define L15_NRESET_PIN    19
 
-/* All TX is deferred to the system workqueue: nrf-sw-lpuart's REQ/RDY
- * handshake completes via GPIOTE interrupts, and calling uart_poll_out
- * from any ISR (RX callback, timer ISR) blocks those interrupts and the
- * send stalls partway. */
+/* Set to 1 to run a single passive Wi-Fi scan via the nRF7000 on SPI1.
+ * Logs every AP found (SSID / BSSID / channel / RSSI / security). The
+ * driver handles BUCKEN + IOVDD-CTL + firmware patch upload internally;
+ * the bring-up just needs a wifi_mgmt scan request. Passive-only is
+ * enforced in the scan params because of the BUCK current limit
+ * (steps.md step 9 / project_palroc_nrf7000_supply.md).
+ *
+ * Antenna note: the same antenna feeds both nRF7000 (Wi-Fi) and nRF54L15
+ * (BLE) through a BGS12SN6E6 SPDT switch gated by SW_CTRL0 → RV2C010UNT2L.
+ * If SW_CTRL0 is high-Z (because the L15 is in reset), the switch may not
+ * route the antenna to the Wi-Fi path and we'll see zero APs even with a
+ * healthy chip. To be resolved before expecting real scan output.
+ */
+/* Note: setting RUN_WIFI_PROBE=0 only skips the scan. The nrf70 driver
+ * still binds at boot (because the dts node has status="okay" and
+ * sysbuild has SB_CONFIG_WIFI_NRF70=y), which means BUCKEN + IOVDD-CTL
+ * get driven HIGH and the chip is powered + receives its firmware patch.
+ * That's harmless — the chip just sits idle drawing standby current.
+ * For *fully cold* nRF7000 (no power), disable the driver in sysbuild +
+ * set status="disabled" on the nrf70 dts node.
+ */
+#define RUN_WIFI_PROBE          1
+#define WIFI_PROBE_TIMEOUT_S    30
 
-static void uart_send(const char *s)
-{
-	while (*s) {
-		uart_poll_out(dut_uart, *s++);
-	}
-}
+/* Set to 1 to run the hall-sensor button probe on P0.01 BEFORE the Wi-Fi
+ * scan. Logs every transition + 1 Hz heartbeat showing the current level,
+ * mirrors level to the red LED for live visual feedback while you wave
+ * a magnet over the sensor. Useful for understanding what the sensor
+ * actually does (active-high vs active-low, single transition per pass
+ * vs multiple, latch behaviour, etc.).
+ */
+#define RUN_BUTTON_PROBE        0
+#define BUTTON_PROBE_DURATION   60
 
-static void send_ping_work_handler(struct k_work *work)
-{
-	LOG_INF("TX: \"PING\"");
-	uart_send("PING\n");
-}
-static K_WORK_DEFINE(send_ping_work, send_ping_work_handler);
-
-static void send_ack_work_handler(struct k_work *work)
-{
-	LOG_INF("TX: \"PING RECEIVED\"");
-	uart_send("PING RECEIVED\n");
-}
-static K_WORK_DEFINE(send_ack_work, send_ack_work_handler);
-
-static void process_line(const char *line)
-{
-	LOG_INF("RX: \"%s\"", line);
-
-	if (strcmp(line, "PING") == 0) {
-#if HAS_LED1
-		gpio_pin_toggle_dt(&led1);
-#endif
-		k_work_submit(&send_ack_work);
-	} else if (strcmp(line, "PING RECEIVED") == 0) {
-#if HAS_LED0
-		gpio_pin_toggle_dt(&led0);
-#endif
-	}
-}
-
-static void uart_rx_cb(const struct device *dev, void *user_data)
-{
-	ARG_UNUSED(user_data);
-	uint8_t c;
-
-	if (!uart_irq_update(dev)) {
-		return;
-	}
-
-	while (uart_irq_rx_ready(dev)) {
-		if (uart_fifo_read(dev, &c, 1) != 1) {
-			continue;
-		}
-		atomic_inc(&rx_byte_count);
-		if (c == '\r' || c == '\n') {
-			if (rx_idx > 0) {
-				rx_buf[rx_idx] = '\0';
-				process_line(rx_buf);
-				rx_idx = 0;
-			}
-		} else if (rx_idx < RX_BUF_SZ - 1) {
-			rx_buf[rx_idx++] = (char)c;
-		} else {
-			rx_idx = 0;
-		}
-	}
-}
-
-static void ping_timer_handler(struct k_timer *t)
-{
-	k_work_submit(&send_ping_work);
-}
-static K_TIMER_DEFINE(ping_timer, ping_timer_handler, NULL);
+/* ===== PER-BOARD TRACKING ============================================
+ * Change BOARD_NUMBER for each physical board you flash. The number
+ * appears in the test summary block at the end of every run, so per-
+ * board comparisons are easy.
+ *
+ * Bump FW_VERSION_STRING when a meaningful firmware change happens
+ * (new probe added, fix in a probe, etc.). The build timestamp from
+ * __DATE__/__TIME__ disambiguates two builds with the same version
+ * string on the same board.
+ * ====================================================================
+ */
+#define BOARD_NUMBER       4
+#define FW_VERSION_STRING  "0.15.0-step16-testreport"
 
 int main(void)
 {
-	printk("\n=== nrf-sw-lpuart symmetric ping test ===\n");
+	LOG_INF("nRF9151 bring-up start  BOARD=%d  fw=%s  built=%s %s",
+		BOARD_NUMBER, FW_VERSION_STRING, __DATE__, __TIME__);
+	diag_print_reset_reason();
 
-	if (!device_is_ready(dut_uart)) {
-		LOG_ERR("dut-uart device %s not ready", dut_uart->name);
-		return -1;
+#if HOLD_L15_IN_RESET
+	{
+		const struct device *gpio0 = DEVICE_DT_GET(DT_NODELABEL(gpio0));
+
+		if (device_is_ready(gpio0)) {
+			gpio_pin_configure(gpio0, L15_NRESET_PIN,
+					   GPIO_OUTPUT_LOW);
+			LOG_INF("nRF54L15 held in reset (P0.%d driven LOW) "
+				"to isolate SPI3 bus", L15_NRESET_PIN);
+		} else {
+			LOG_ERR("gpio0 not ready, can't hold L15 in reset");
+		}
 	}
-
-#if HAS_LED0
-	gpio_pin_configure_dt(&led0, GPIO_OUTPUT_INACTIVE);
-#endif
-#if HAS_LED1
-	gpio_pin_configure_dt(&led1, GPIO_OUTPUT_INACTIVE);
 #endif
 
-	uart_irq_callback_user_data_set(dut_uart, uart_rx_cb, NULL);
-	uart_irq_rx_enable(dut_uart);
+	/* Hold here so RTT viewers reconnecting after a silent reset can
+	 * grab the cause line above before everything else moves on.
+	 */
+	LOG_INF("post-reset hold: %d ms (reconnect RTT now if needed)...",
+		POST_RESET_HOLD_MS);
+	k_msleep(POST_RESET_HOLD_MS);
 
-	LOG_INF("Ready. Sending PING every 5 s; replying PING RECEIVED on incoming PING.");
+	boot_indicator();
+	k_msleep(BOOT_SETTLE_MS);
 
-	k_timer_start(&ping_timer, PING_INTERVAL, PING_INTERVAL);
+	LOG_INF("--- Modem (init + AT only) ---");
+	modem_probe();
+	k_msleep(INTER_PHASE_MS);
 
-	while (1) {
-		k_sleep(K_SECONDS(1));
-		LOG_INF("alive | rx total: %u bytes",
-			(uint32_t)atomic_get(&rx_byte_count));
+#if RUN_GNSS_PROBE
+	gnss_probe(GNSS_PROBE_DURATION);
+	k_msleep(INTER_PHASE_MS);
+#endif
+
+	/* CFUN=4 soak passed (step 5.1 — see steps.md). Now try a low-power
+	 * attach: B8 band-lock + 1 dB TX back-off, software-only mitigations
+	 * to see if the supply can carry the reduced peak currents.
+	 *
+	 * To re-run the CFUN=4 isolation soak, swap the call below for:
+	 *   modem_cfun4_soak(60);
+	 * To run the unrestricted attach, swap for:
+	 *   modem_lte_attach();
+	 */
+#if RUN_BAND_SWEEP
+	LOG_INF("--- LTE band sweep ---");
+	modem_band_sweep();
+#else
+	LOG_INF("--- LTE attach (NB-IoT, low-power, single band) ---");
+	modem_lte_attach_lowpower();
+#endif
+	k_msleep(INTER_PHASE_MS);
+
+	LOG_INF("--- I2C2 scan ---");
+	i2c_scan();
+	k_msleep(INTER_PHASE_MS);
+
+	LOG_INF("--- nPM1300 read (VBAT / NTC / IBAT) ---");
+	/* Wait until the 15 s boot mark before reading. The PMIC's ADC and
+	 * gauge state can need a moment to settle after power-on; reading
+	 * too early gave us a dropped/garbled sample line on the first
+	 * attempt. 15 s is plenty of headroom and synchronises the read
+	 * with PPK2 captures.
+	 */
+	{
+		const int64_t target_ms = 15000;
+		int64_t now = k_uptime_get();
+
+		if (now < target_ms) {
+			LOG_INF("waiting %lld ms until t=15s for PMIC settle...",
+				target_ms - now);
+			k_msleep(target_ms - now);
+		}
 	}
+	npm1300_probe();
+	k_msleep(INTER_PHASE_MS);
+
+	LOG_INF("--- SPI3 flash @ CS=P0.12 ---");
+	spi_flash_jedec();
+	k_msleep(INTER_PHASE_MS);
+
+	LOG_INF("--- SPI3 IMU @ CS=P0.16 ---");
+	spi_imu_whoami();
+	k_msleep(INTER_PHASE_MS);
+
+#if RUN_BUTTON_PROBE
+	button_probe(BUTTON_PROBE_DURATION);
+	k_msleep(INTER_PHASE_MS);
+#endif
+
+#if RUN_WIFI_PROBE
+	LOG_INF("--- nRF7000 passive Wi-Fi scan ---");
+	wifi_passive_scan(WIFI_PROBE_TIMEOUT_S);
+	k_msleep(INTER_PHASE_MS);
+#endif
+
+	LOG_INF("--- LEDs walk ---");
+	leds_walk();
+
+#if !RUN_BAND_SWEEP
+	/* Tag SKIP for any test that wasn't actually run this build, so the
+	 * summary table makes the build-time configuration obvious rather
+	 * than silently omitting them.
+	 */
+	test_report("band_sweep", TEST_SKIP, "RUN_BAND_SWEEP=0");
+#endif
+#if !RUN_GNSS_PROBE
+	test_report("gnss", TEST_SKIP, "RUN_GNSS_PROBE=0");
+#endif
+#if !RUN_BUTTON_PROBE
+	test_report("hall2", TEST_SKIP, "RUN_BUTTON_PROBE=0");
+	test_report("hall1", TEST_SKIP, "RUN_BUTTON_PROBE=0");
+#endif
+#if !RUN_WIFI_PROBE
+	test_report("wifi", TEST_SKIP, "RUN_WIFI_PROBE=0");
+#endif
+
+	LOG_INF("bring-up complete");
+	test_report_summary(BOARD_NUMBER, FW_VERSION_STRING);
 	return 0;
 }

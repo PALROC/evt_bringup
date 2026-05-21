@@ -1,0 +1,8 @@
+board:
+  name: nrf9151_palroc
+  full_name: nRF9151 DK Bringup
+  vendor: palroc
+  socs:
+  - name: nrf9151
+    variants:
+    - name: 'ns'

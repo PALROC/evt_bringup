@@ -1,0 +1,110 @@
+/*
+ * Copyright (c) 2024 Nordic Semiconductor ASA
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/* This file is common to the secure and non-secure domain */
+
+#include "nrf54l15_palroc_complete_common.dtsi"
+
+/ {
+	chosen {
+		zephyr,flash-controller = &rram_controller;
+		zephyr,flash = &cpuapp_rram;
+		zephyr,ieee802154 = &ieee802154;
+		zephyr,boot-mode = &boot_mode0;
+	};
+};
+
+&cpuapp_sram {
+	status = "okay";
+};
+
+/* No 32 kHz crystal on XL1/XL2 on the palroc board.
+ * Disable LFXO so the kernel doesn't hang at boot waiting for it; GRTC will
+ * use the internal LFRC instead. Combined with CONFIG_CLOCK_CONTROL_NRF_K32SRC_RC=y
+ * and CONFIG_CLOCK_CONTROL_NRF_K32SRC_XTAL=n in prj.conf, this is the documented
+ * K32SRC RC fix. Removing this disable will silently brick the boot.
+ */
+&lfxo {
+	status = "disabled";
+};
+
+/* 32 MHz crystal: SMD2016-4P, CL = 8 pF, no external load caps on the
+ * palroc board (XL1/XL2 are direct to the crystal pads). On nRF54L the
+ * load-capacitance-femtofarad value is the *per-pin internal* load cap,
+ * NOT the crystal's CL spec. With Cx = 8 pF and Cstray ≈ 1.5 pF:
+ *   Cint_per_pin = 2 * (Cx - Cstray) = 13 pF
+ * Tuned to 14 pF empirically — BLE-visible-on-phone-scanner is the
+ * acceptance test. Pin Planner's default `external` setting is wrong
+ * for this board and will silently break BLE advertising.
+ */
+&hfxo {
+	load-capacitors = "internal";
+	load-capacitance-femtofarad = <14000>;
+};
+
+&regulators {
+	status = "okay";
+};
+
+&vregmain {
+	status = "okay";
+	regulator-initial-mode = <NRF5X_REG_MODE_DCDC>;
+};
+
+&grtc {
+	owned-channels = <0 1 2 3 4 5 6 7 8 9 10 11>;
+	/* Channels 7-11 reserved for Zero Latency IRQs, 3-4 for FLPR */
+	child-owned-channels = <3 4 7 8 9 10 11>;
+	status = "okay";
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+
+&gpio2 {
+	status = "okay";
+};
+
+
+&gpiote20 {
+	status = "okay";
+};
+
+&gpiote30 {
+	status = "okay";
+};
+
+&radio {
+	status = "okay";
+};
+
+&ieee802154 {
+	status = "okay";
+};
+
+&temp {
+	status = "okay";
+};
+
+&clock {
+	status = "okay";
+};
+
+&gpregret1 {
+	status = "okay";
+
+	boot_mode0: boot_mode@0 {
+		compatible = "zephyr,retention";
+		status = "okay";
+		reg = <0x0 0x1>;
+	};
+};

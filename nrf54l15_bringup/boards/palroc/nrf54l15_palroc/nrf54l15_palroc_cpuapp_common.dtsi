@@ -1,0 +1,118 @@
+/*
+ * Copyright (c) 2024 Nordic Semiconductor ASA
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+#include "nrf54l15_palroc_common.dtsi"
+
+/ {
+	chosen {
+		zephyr,console = &uart20;
+		zephyr,shell-uart = &uart20;
+		zephyr,uart-mcumgr = &uart20;
+		zephyr,flash-controller = &rram_controller;
+		zephyr,flash = &cpuapp_rram;
+	};
+};
+
+&cpuapp_sram {
+	status = "okay";
+};
+
+/* No 32.768 kHz crystal on XL1/XL2 on the palroc board.
+ * Disable LFXO so the kernel doesn't hang waiting for it; GRTC will use
+ * the internal LFRC (~250 ppm) instead. Revisit if precise timing matters.
+ */
+&lfxo {
+	status = "disabled";
+};
+
+/* 32 MHz crystal: SMD2016-4P, CL = 8 pF.
+ *
+ * Note on the semantics of `load-capacitance-femtofarad`: on nRF54L this is
+ * the per-pin internal load capacitor value, NOT the crystal's CL spec.
+ * For a CL=Cx crystal with Cstray ≈ 1.5 pF, the math is:
+ *   Cint_per_pin = 2 * (Cx - Cstray)
+ * so for Cx = 8 pF → Cint ≈ 13 pF. We tune up slightly to 14 pF as a
+ * starting point; the crystal+chip combo is forgiving of ±1 pF and BLE
+ * is the empirical test (a phone scanner sees the beacon = HFXO is at
+ * the right frequency).
+ */
+&hfxo {
+	load-capacitors = "internal";
+	load-capacitance-femtofarad = <14000>;
+};
+
+&regulators {
+	status = "okay";
+};
+
+&vregmain {
+	status = "okay";
+	regulator-initial-mode = <NRF5X_REG_MODE_DCDC>;
+};
+
+&grtc {
+	owned-channels = <0 1 2 3 4 5 6 7 8 9 10 11>;
+	child-owned-channels = <7 8 9 10 11>;
+	status = "okay";
+};
+
+&uart20 {
+	status = "okay";
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+&gpio2 {
+	status = "okay";
+};
+
+&gpiote20 {
+	status = "okay";
+};
+
+&gpiote30 {
+	status = "okay";
+};
+
+&clock {
+	status = "okay";
+};
+
+&temp {
+	status = "okay";
+};
+
+&radio {
+	status = "okay";
+};
+
+&ieee802154 {
+	status = "okay";
+};
+
+&nfct {
+	status = "okay";
+};
+
+&adc {
+	status = "okay";
+};
+
+&gpregret1 {
+	status = "okay";
+
+	boot_mode0: boot_mode@0 {
+		compatible = "zephyr,retention";
+		status = "okay";
+		reg = <0x0 0x1>;
+	};
+};

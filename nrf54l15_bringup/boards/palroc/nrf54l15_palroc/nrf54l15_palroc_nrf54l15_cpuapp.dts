@@ -1,0 +1,23 @@
+/*
+ * Copyright (c) 2024 Nordic Semiconductor ASA
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/dts-v1/;
+
+#include <nordic/nrf54l15_cpuapp.dtsi>
+#include "nrf54l15_palroc_cpuapp_common.dtsi"
+
+/ {
+	compatible = "palroc,nrf54l15_palroc-cpuapp";
+	model = "palroc nRF54L15";
+
+	chosen {
+		zephyr,code-partition = &slot0_partition;
+		zephyr,sram = &cpuapp_sram;
+	};
+};
+
+/* Include default memory partition configuration file */
+#include <vendor/nordic/nrf54l15_cpuapp_partition.dtsi>

@@ -1,0 +1,129 @@
+/*
+ * Copyright (c) 2024 Nordic Semiconductor ASA
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+
+#include "nrf54l15_palroc_complete_nrf54l15-pinctrl.dtsi"
+
+
+&nfct {
+	status = "okay";
+};
+
+&spi00 {
+	status = "okay";
+	pinctrl-0 = <&spi00_default>;
+	pinctrl-1 = <&spi00_sleep>;
+	pinctrl-names = "default", "sleep";
+	/* CS pin: P2.5 */
+	cs-gpios = <&gpio2 5 GPIO_ACTIVE_LOW>,
+		   <&gpio1 14 GPIO_ACTIVE_LOW>;
+};
+
+&spi21 {
+	status = "okay";
+	pinctrl-0 = <&spi21_default>;
+	pinctrl-1 = <&spi21_sleep>;
+	pinctrl-names = "default", "sleep";
+	/* CS pin: P2.10 */
+	cs-gpios = <&gpio2 10 GPIO_ACTIVE_LOW>;
+};
+
+&i2c20 {
+	/* Disabled: P1.4 (SCL) / P1.5 (SDA) are physically shared with the
+	 * 9151's I2C2 master. Enabling i2c20 here makes the L15 a contending
+	 * TWI master on the same lines. Keep disabled until the cross-MCU bus
+	 * arbitration protocol exists (see firmware_handoff.md item 1).
+	 */
+	status = "disabled";
+	pinctrl-0 = <&i2c20_default>;
+	pinctrl-1 = <&i2c20_sleep>;
+	pinctrl-names = "default", "sleep";
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+};
+
+/* uart30 = nrf-sw-lpuart inter-MCU link to the 9151.
+ * Underlying UART runs async; REQ/RDY GPIOs replace hardware flow control.
+ * The wired CTS/RTS pair (P0.02 / P0.03) is left as a backup — if REQ/RDY
+ * misbehave, retarget the lpuart child below to those pins (and put the
+ * data RX back on P0.01).
+ */
+&uart30 {
+	status = "okay";
+	pinctrl-0 = <&uart30_default>;
+	pinctrl-1 = <&uart30_sleep>;
+	pinctrl-names = "default", "sleep";
+	current-speed = <115200>;
+	/delete-property/ hw-flow-control;
+
+	lpuart: nrf-sw-lpuart {
+		compatible = "nordic,nrf-sw-lpuart";
+		status = "okay";
+		/* TODO (FW engineer): confirm REQ/RDY pin numbers against the
+		 * new palroc_complete schematic. In the prior board variant
+		 * these were L15 P1.12 (REQ) and P1.11 (RDY).
+		 * Pin numbers are (port * 32) + pin: P1.12 = 44, P1.11 = 43.
+		 */
+		req-pin = <44>;   /* placeholder: P1.12 */
+		rdy-pin = <43>;   /* placeholder: P1.11 */
+	};
+};
+
+/ {
+	/* OUTPUT — L15 drives HIGH to close the TCK106AG load switch and
+	 * power up the nRF7000 BUCK rail. Active-HIGH per TCK106AG "G" variant.
+	 */
+	wifi_buck_en: wifi_buck_en {
+		gpios = <&gpio1 0 GPIO_ACTIVE_HIGH>;
+	};
+
+	/* OUTPUT — L15 drives HIGH to close the second TCK106AG and power up
+	 * the nRF7000 IOVDD rail. Sequenced ~5 ms after wifi_buck_en.
+	 */
+	wifi_vddio_ctrl: wifi_vddio_ctrl {
+		gpios = <&gpio1 1 GPIO_ACTIVE_HIGH>;
+	};
+
+	/* INPUT — nRF7000 drives HIGH to signal "data ready for host". L15
+	 * reads via interrupt or polling. Configure with GPIO_INPUT.
+	 */
+	wifi_host_irq: wifi_host_irq {
+		gpios = <&gpio1 6 GPIO_ACTIVE_HIGH>;
+	};
+
+	/* OUTPUT — L15 (BLE) drives HIGH to request radio access from the
+	 * coex coordinator (nRF7000). Part of the Wi-Fi/BLE coex handshake.
+	 */
+	wifi_coex_req: wifi_coex_req {
+		gpios = <&gpio1 7 GPIO_ACTIVE_HIGH>;
+	};
+
+	/* OUTPUT — L15 drives to indicate its current radio state to the
+	 * coex coordinator. Confirm direction against schematic if in doubt.
+	 */
+	wifi_coex_status: wifi_coex_status {
+		gpios = <&gpio1 8 GPIO_ACTIVE_HIGH>;
+	};
+
+	/* OUTPUT — L15 drives HIGH at boot to gate the RV2C010UNT2L FET and
+	 * power the BGS12SN6E6 RF switch VDD. Bench-validated polarity.
+	 */
+	rffe_ble_wifi_enable: rffe_ble_wifi_enable {
+		gpios = <&gpio1 10 GPIO_ACTIVE_HIGH>;
+	};
+
+	/* INPUT — nRF7000 drives HIGH when granting the L15 radio access.
+	 * L15 must hold off transmissions while this is LOW.
+	 */
+	wifi_coex_grant: wifi_coex_grant {
+		gpios = <&gpio1 13 GPIO_ACTIVE_HIGH>;
+	};
+
+	/* INPUT — nRF7000 drives HIGH when it is using the 2.4 GHz band, so
+	 * the L15 (BLE on the same band) can sense potential interference.
+	 */
+	wifi_uses_2_4g: wifi_uses_2_4g {
+		gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
+	};
+};

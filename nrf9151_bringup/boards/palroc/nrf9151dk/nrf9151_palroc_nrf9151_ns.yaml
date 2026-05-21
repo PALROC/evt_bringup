@@ -1,0 +1,15 @@
+identifier: nrf9151_palroc/nrf9151/ns
+name: Palroc-nRF9151-Non-Secure
+type: mcu
+arch: arm
+toolchain:
+  - gnuarmemb
+  - zephyr
+ram: 128
+flash: 192
+supported:
+  - gpio
+  - watchdog
+  - netif:modem
+vendor: palroc
+sysbuild: true

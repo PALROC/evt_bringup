@@ -1,0 +1,276 @@
+/*
+ * Copyright (c) 2023 Nordic Semiconductor ASA
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+#include "nrf9151dk_nrf9151_common-pinctrl.dtsi"
+#include <zephyr/dt-bindings/i2c/i2c.h>
+#include <zephyr/dt-bindings/regulator/npm13xx.h>
+
+/ {
+	model = "Nordic nRF9151 DK NRF9151";
+	compatible = "nordic,nrf9151-dk-nrf9151";
+
+	chosen {
+	};
+
+	aliases {
+		watchdog0 = &wdt0;
+		led-blue  = &led_blue;
+		led-green = &led_green;
+		led-red   = &led_red;
+	};
+
+	/* On-board user LEDs driven through N-MOSFET low-side switches:
+	 * GPIO high → MOSFET on → LED on, so they are active-high.
+	 * (Confirmed by red LED behaviour during step 3 bring-up.)
+	 */
+	leds {
+		compatible = "gpio-leds";
+
+		led_blue: led_blue {
+			gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
+			label = "blue";
+		};
+
+		led_green: led_green {
+			gpios = <&gpio0 5 GPIO_ACTIVE_HIGH>;
+			label = "green";
+		};
+
+		led_red: led_red {
+			gpios = <&gpio0 10 GPIO_ACTIVE_HIGH>;
+			label = "red";
+		};
+	};
+};
+
+/* uart0 must stay enabled — TF-M uses it during secure boot before handing
+ * off to the non-secure app. Zephyr console is routed to RTT via prj.conf. */
+&uart0 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&uart0_default>;
+	pinctrl-1 = <&uart0_sleep>;
+	pinctrl-names = "default", "sleep";
+};
+
+/* GPIO0 is disabled by default in nrf91_peripherals.dtsi — enable it so
+ * the app can drive software CS pins (and any future GPIO-controlled
+ * signals) via DEVICE_DT_GET(DT_NODELABEL(gpio0)).
+ */
+&gpio0 {
+	status = "okay";
+};
+
+&gpiote {
+	status = "okay";
+};
+
+/* Bare i2c2 bus on P0.08 (SCL) / P0.09 (SDA) — children added incrementally
+ * as peripherals are brought up. App can grab the bus via DT_NODELABEL(i2c2).
+ */
+&i2c2 {
+	compatible = "nordic,nrf-twim";
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+	pinctrl-0 = <&i2c2_default>;
+	pinctrl-1 = <&i2c2_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	/* nPM1300 PMIC. Charger child exposes battery voltage, NTC temp,
+	 * and average current via the Zephyr sensor API. The empty
+	 * regulators block is required by the binding even if we don't
+	 * actively control BUCK/LDO from software yet.
+	 *
+	 * Battery profile (term-microvolt / current-microamp) is a
+	 * conservative placeholder — refine when an actual cell is profiled.
+	 * Thermistor 10 kΩ NTC, β=3380 (typical Murata NCP15WB473D03RC);
+	 * update if a different NTC is fitted.
+	 */
+	npm1300_pmic: npm1300@6b {
+		compatible = "nordic,npm1300";
+		reg = <0x6b>;
+
+		regulators {
+			compatible = "nordic,npm1300-regulator";
+
+			/* `regulator-always-on` + `regulator-boot-on` tell Zephyr's
+			 * regulator framework to leave these rails at whatever state
+			 * the PMIC defaulted to at power-on, instead of gating them
+			 * during driver init. Without these, enabling
+			 * CONFIG_REGULATOR_NPM13XX caused the rail supplying the SPI
+			 * flash + IMU to get reconfigured (flash regressed from
+			 * EF 40 18 to 00 00 00 after the npm1300 driver was added).
+			 */
+
+			/* BUCK1 → nRF7000 VBAT.
+			 * BUCK2 → nRF7000 VDDIO + 3V3 rail (W25Q128JV NOR flash,
+			 *         LSM6DSO, etc.).
+			 *
+			 * Hard nRF7000 supply constraint: VBAT ≥ VDDIO (datasheet).
+			 * Original design had BUCK1 = 1.8 V / BUCK2 = 3.3 V which
+			 * violates this — VBAT < VDDIO breaks the chip. Software fix
+			 * on the existing board: invert the rails so BUCK1 = 3.3 V
+			 * (nRF7000 VBAT) and BUCK2 = 2.7 V (NOR flash floor: W25Q128JV
+			 * spec'd 2.7–3.6 V), giving a 0.6 V VBAT-to-VDDIO margin.
+			 *
+			 * Power note: nPM1300 BUCKs are limited to ~250 mA each.
+			 * nRF7000 active scan exceeds that, so when the Wi-Fi driver
+			 * is added the scan code MUST use passive scan only (no probe-
+			 * request TX) — see steps.md step 9.
+			 */
+			npm1300_buck1: BUCK1 {
+				regulator-init-microvolt = <3300000>;
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+			npm1300_buck2: BUCK2 {
+				regulator-init-microvolt = <3300000>;
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+			/* LDO1 → GNSS antenna LNA VDD.
+			 * Kept at BUCK2 voltage (3.3 V) — COEX0 swings
+			 * 0..VDDIO_GPIO = 0..BUCK2, so LDO1 must match.
+			 * LDO mode (not load-switch) so the voltage is regulated,
+			 * not VSYS passthrough. v2: 20 µF output cap for stability.
+			 */
+			npm1300_ldo1: LDO1 {
+				regulator-initial-mode = <NPM13XX_LDSW_MODE_LDO>;
+				regulator-allowed-modes = <NPM13XX_LDSW_MODE_LDO>;
+				regulator-init-microvolt = <3300000>;
+				regulator-min-microvolt  = <3300000>;
+				regulator-max-microvolt  = <3300000>;
+				regulator-always-on;
+				regulator-boot-on;
+			};
+			/* LDO2 → BGS12SN6E6 RF switch VDD. Not needed for
+			 * current bring-up; kept in DTS but left disabled.
+			 */
+			npm1300_ldo2: LDO2 {
+				regulator-initial-mode = <NPM13XX_LDSW_MODE_LDO>;
+				regulator-allowed-modes = <NPM13XX_LDSW_MODE_LDO>;
+				regulator-init-microvolt = <3300000>;
+				regulator-min-microvolt  = <3300000>;
+				regulator-max-microvolt  = <3300000>;
+			};
+		};
+
+		npm1300_charger: charger {
+			compatible = "nordic,npm1300-charger";
+			term-microvolt = <4150000>;       /* 4.15 V cv termination, conservative for typical 4.2 V LiPo */
+			current-microamp = <150000>;      /* 150 mA charge current — gentle */
+			dischg-limit-microamp = <1000000>; /* 200000 or 1000000 only */
+			vbus-limit-microamp = <500000>;   /* USB 2.0 default */
+			thermistor-ohms = <10000>;
+			thermistor-beta = <3380>;
+			/* charging-enable; — temporarily off while debugging
+			 * SPI flash JEDEC failures. Charging itself was
+			 * validated at 158 mA earlier (matched the 150 mA
+			 * setting). Re-enable once the flash issue is
+			 * understood, in case CC charging current was somehow
+			 * disturbing BUCK2 rail and affecting SPI.
+			 */
+		};
+	};
+};
+
+/* Bare spi3 bus on P0.13 (SCK) / P0.14 (MISO) / P0.15 (MOSI).
+ * CS pins are managed in software per-device (IMU on P0.16, flash on P0.12).
+ */
+&spi3 {
+	compatible = "nordic,nrf-spim";
+	status = "okay";
+	pinctrl-0 = <&spi3_default>;
+	pinctrl-1 = <&spi3_sleep>;
+	pinctrl-names = "default", "sleep";
+};
+
+/* SPI1 → nRF7000 Wi-Fi chip. CS=P0.25 active-low managed by the SPI driver
+ * via cs-gpios. Bus speed starts conservative at 8 MHz; nRF70 supports up
+ * to 32 MHz, but bring-up wants headroom against any signal-integrity
+ * surprises on the new traces.
+ *
+ * Power-up sequencing (handled automatically by the nrf70 driver):
+ *   1. Drive bucken-gpios HIGH  → TCK106AG load switch closes, BUCK rail
+ *                                 inside the nRF7000 powers up
+ *   2. Wait ~5 ms (driver-internal)
+ *   3. Drive iovdd-ctrl-gpios HIGH → second TCK106AG closes, IOVDD rail
+ *                                    powers up
+ *   4. Wait ~5 ms
+ *   5. SPI handshake + firmware patch upload
+ *
+ * TCK106AG is the active-HIGH variant ("G" suffix; "F" would be active-LOW)
+ * — both gating signals therefore use GPIO_ACTIVE_HIGH. Verify with a
+ * multimeter on the load-switch outputs after first build.
+ *
+ * RF antenna sharing: the same antenna feeds nRF7000 (Wi-Fi) and nRF54L15
+ * (BLE) through a BGS12SN6E6 SPDT switch. Switch VDD is now wired to LDO2
+ * (handled below — pinned at 2.9 V to match the COEX0/GPIO logic level
+ * rule from step 11). The switch's VC pin is gated by an RV2C010UNT2L
+ * MOSFET driven by SW_CTRL0. **Open question (steps.md TBD): which chip
+ * drives SW_CTRL0?** If it's an L15 GPIO and the L15 is held in reset
+ * (HOLD_L15_IN_RESET=1 in main.c, currently true), SW_CTRL0 is high-Z and
+ * the antenna may not be routed to the Wi-Fi path during this test —
+ * scan results may show no APs even if the chip itself initialises
+ * cleanly. Resolve before expecting real scan output.
+ */
+&spi1 {
+	compatible = "nordic,nrf-spim";
+	status = "okay";
+	pinctrl-0 = <&spi1_default>;
+	pinctrl-1 = <&spi1_sleep>;
+	pinctrl-names = "default", "sleep";
+	cs-gpios = <&gpio0 25 GPIO_ACTIVE_LOW>;
+
+	nrf70: nrf7000@0 {
+		/* nordic,nrf7000-spi is the proper variant for nRF7000 (single-
+		 * spatial-stream, IP-only). The driver supports 7000/7001/7002
+		 * via the same nrf70 backend; the compatible just selects
+		 * which TX-power table the binding requires.
+		 */
+		compatible = "nordic,nrf7000-spi";
+		status = "okay";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+
+		iovdd-ctrl-gpios = <&gpio0 29 GPIO_ACTIVE_HIGH>;
+		bucken-gpios = <&gpio0 28 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+		host-irq-gpios = <&gpio0 27 GPIO_ACTIVE_HIGH>;
+
+		/* Required TX-power ceiling table. Values in dBm with 1 dBm
+		 * resolution. These are the conservative defaults from
+		 * Nordic's reference samples. We're scan-only on this board
+		 * (no TX), so the exact ceilings don't matter operationally,
+		 * but the binding requires them for compile-time validation.
+		 * Tighten these only after RF characterisation.
+		 */
+		wifi-max-tx-pwr-2g-dsss = <21>;
+		wifi-max-tx-pwr-2g-mcs0 = <16>;
+		wifi-max-tx-pwr-2g-mcs7 = <16>;
+		wifi-max-tx-pwr-5g-low-mcs0  = <13>;
+		wifi-max-tx-pwr-5g-low-mcs7  = <13>;
+		wifi-max-tx-pwr-5g-mid-mcs0  = <13>;
+		wifi-max-tx-pwr-5g-mid-mcs7  = <13>;
+		wifi-max-tx-pwr-5g-high-mcs0 = <12>;
+		wifi-max-tx-pwr-5g-high-mcs7 = <12>;
+
+		/* The driver looks for a `nordic,wlan` child node — without
+		 * it, the build fails with `'DT_N_INST_0_nordic_wlan_FULL_NAME'
+		 * undeclared`. The child is just the netif binding; the
+		 * compatible alone is enough.
+		 */
+		wlan0: wlan0 {
+			compatible = "nordic,wlan";
+			status = "okay";
+		};
+	};
+};
+
+/* Include default memory partition configuration file */
+#include <nordic/nrf91xx_partition.dtsi>
