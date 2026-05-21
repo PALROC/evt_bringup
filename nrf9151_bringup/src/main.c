@@ -12,7 +12,10 @@
 #include "diag.h"
 #include "leds.h"
 #include "i2c_probe.h"
-#include "npm1300.h"
+/* npm1300 PMIC ownership moved to the L15 (it owns the nRF7000 power
+ * rails, which it needs to drive the Wi-Fi chip). The 9151's i2c2 + the
+ * npm1300 node are disabled at the board level — see
+ * palroc_nova/.../nrf9151_nova_evt1_common.dtsi. */
 #include "spi_probe.h"
 #include "modem.h"
 #include "gnss.h"
@@ -188,8 +191,10 @@ int main(void)
 			k_msleep(target_ms - now);
 		}
 	}
-	npm1300_probe();
-	k_msleep(INTER_PHASE_MS);
+	/* npm1300_probe() removed — PMIC ownership is now the L15's (it sets
+	 * BUCK1/BUCK2 = 3.3 V for the nRF7000). The 9151's i2c2 is disabled
+	 * at the board level so it can't contend on the shared bus. */
+	test_report("npm1300", TEST_SKIP, "PMIC owned by L15 (Wi-Fi host)");
 
 	LOG_INF("--- SPI3 flash @ CS=P0.12 ---");
 	spi_flash_jedec();

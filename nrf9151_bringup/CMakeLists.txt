@@ -13,7 +13,7 @@ target_sources(app PRIVATE
 	src/main.c
 	src/leds.c
 	src/i2c_probe.c
-	src/npm1300.c
+	# src/npm1300.c — PMIC ownership moved to the L15; see prj.conf
 	src/spi_probe.c
 	src/modem.c
 	src/gnss.c

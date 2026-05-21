@@ -36,22 +36,12 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #define BOARD_NUMBER       3
 #define FW_VERSION_STRING  "0.3.0-l15-rffe-enable"
 
-/* Shared i²c2 bus with the 9151:
- *   L15 P1.04 ↔ SDA ↔ 9151 P0.09
- *   L15 P1.05 ↔ SCL ↔ 9151 P0.08
- * The 9151 is the bus master. To make sure the L15 doesn't disturb
- * 9151-side i²c traffic, force these pins to high-Z input with no pull
- * at boot — *before* anything else runs. The L15 will be observable on
- * the bus only as a passive line; if we ever want it as a master or
- * slave, we'd configure i²c here instead.
+/* The L15 is now the npm1300 PMIC master over i2c20 (SDA P1.04 / SCL
+ * P1.05) — it owns the nRF7000 power rails. So we no longer park those
+ * pins high-Z; the i2c20 driver drives them. (The 9151 is off this bus —
+ * its i2c2 is disabled in the board DT.)
  *
- * Inter-MCU bus arbitration on the shared SPI3 + i²c2 buses is application
- * firmware's design problem (per step 16); this bring-up's job is just
- * proving the L15 chip itself is alive.
- */
-#define L15_I2C_SHARED_SDA_PIN    4
-#define L15_I2C_SHARED_SCL_PIN    5
-/* RFFE_BLE_WIFI_ENABLE = P1.10 — gates the BGS12SN6E6 RF switch VDD via
+ * RFFE_BLE_WIFI_ENABLE = P1.10 — gates the BGS12SN6E6 RF switch VDD via
  * the RV2C010UNT2L gate FET. Must be HIGH for the switch to be powered.
  */
 #define RFFE_BLE_WIFI_ENABLE_PIN  10
@@ -64,11 +54,6 @@ static int l15_early_gpio_init(void)
 		LOG_ERR("gpio1 not ready, can't init early GPIOs");
 		return -ENODEV;
 	}
-	(void)gpio_pin_configure(gpio1, L15_I2C_SHARED_SDA_PIN,
-				 GPIO_INPUT | GPIO_DISCONNECTED);
-	(void)gpio_pin_configure(gpio1, L15_I2C_SHARED_SCL_PIN,
-				 GPIO_INPUT | GPIO_DISCONNECTED);
-	LOG_INF("shared i²c pins (P1.4 SDA, P1.5 SCL) parked as high-Z inputs");
 	(void)gpio_pin_configure(gpio1, RFFE_BLE_WIFI_ENABLE_PIN,
 				 GPIO_OUTPUT_HIGH);
 	LOG_INF("RFFE_BLE_WIFI_ENABLE (P1.10) driven HIGH — RF switch powered");
@@ -116,6 +101,20 @@ int main(void)
 	LOG_INF("nRF54L15 palroc bring-up start  BOARD=%d  fw=%s  built=%s %s",
 		BOARD_NUMBER, FW_VERSION_STRING, __DATE__, __TIME__);
 
+	/* ===== SAFETY: recovery window BEFORE any power-pin drive ===========
+	 * The diagnostic below drives the nRF7000 load-switch controls HIGH,
+	 * which (if mis-wired or if it triggers a supply runaway) could wedge
+	 * the board. This 15 s do-nothing window opens on EVERY boot, before
+	 * anything touches those pins — so if a previous flash left the board
+	 * in a bad state, you always have 15 s here to interrupt with
+	 * `nrfjprog --recover` / `west flash --erase` before the drive runs
+	 * again. Do not move any GPIO drive above this loop.
+	 */
+	for (int s = 15; s > 0; s--) {
+		LOG_INF("SAFETY: %d s recovery window (reflash now if needed)...", s);
+		k_sleep(K_SECONDS(1));
+	}
+
 	/* If we got here, the kernel finished init — the LFXO/K32SRC fix
 	 * (CONFIG_CLOCK_CONTROL_NRF_K32SRC_RC=y) survived another reboot.
 	 * That's the chief "alive" signal for the L15 on this board.
@@ -123,6 +122,11 @@ int main(void)
 	test_report("boot", TEST_PASS, "kernel init OK, K32SRC_RC fix held");
 
 	test_gpio_park();
+
+	/* Power-path confirmed: driving P1.00/P1.01 HIGH from the app draws
+	 * ~120 mA, so the L15 pins do reach the nRF7000 load switches. The
+	 * nrf70 driver owns these pins (bucken-gpios / iovdd-ctrl-gpios), so
+	 * we let it manage power rather than forcing the pins from here. */
 
 	LOG_INF("--- nRF7000 passive Wi-Fi scan ---");
 	wifi_passive_scan(WIFI_PROBE_TIMEOUT_S);
