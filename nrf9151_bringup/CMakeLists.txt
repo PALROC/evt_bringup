@@ -12,8 +12,8 @@ project(nrf_connect_sdk_fundamentals)
 target_sources(app PRIVATE
 	src/main.c
 	src/leds.c
-	src/i2c_probe.c
-	# src/npm1300.c — PMIC ownership moved to the L15; see prj.conf
+	# src/i2c_probe.c — i2c2 owned by the L15; see prj.conf
+	# src/npm1300.c   — PMIC ownership moved to the L15; see prj.conf
 	src/spi_probe.c
 	src/modem.c
 	src/gnss.c

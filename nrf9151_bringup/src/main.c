@@ -11,11 +11,11 @@
 
 #include "diag.h"
 #include "leds.h"
-#include "i2c_probe.h"
-/* npm1300 PMIC ownership moved to the L15 (it owns the nRF7000 power
- * rails, which it needs to drive the Wi-Fi chip). The 9151's i2c2 + the
- * npm1300 node are disabled at the board level — see
- * palroc_nova/.../nrf9151_nova_evt1_common.dtsi. */
+/* i2c_probe + npm1300 dropped together — the 9151's i2c2 is now disabled
+ * at the board level (PMIC ownership moved to the L15, which is the
+ * Wi-Fi host). Without an enabled i2c bus there's nothing for the 9151
+ * to probe on that side. See palroc_nova/.../nrf9151_nova_evt1_common.dtsi.
+ */
 #include "spi_probe.h"
 #include "modem.h"
 #include "gnss.h"
@@ -170,9 +170,8 @@ int main(void)
 #endif
 	k_msleep(INTER_PHASE_MS);
 
-	LOG_INF("--- I2C2 scan ---");
-	i2c_scan();
-	k_msleep(INTER_PHASE_MS);
+	/* I2C2 scan dropped — bus owned by the L15 now. */
+	test_report("i2c2", TEST_SKIP, "i2c2 disabled (PMIC owned by L15)");
 
 	LOG_INF("--- nPM1300 read (VBAT / NTC / IBAT) ---");
 	/* Wait until the 15 s boot mark before reading. The PMIC's ADC and
