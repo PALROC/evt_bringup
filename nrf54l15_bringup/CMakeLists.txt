@@ -11,4 +11,5 @@ project(nrf54l15_palroc_bringup)
 target_sources(app PRIVATE
 	src/main.c
 	src/test_report.c
+	src/wifi_probe.c
 )

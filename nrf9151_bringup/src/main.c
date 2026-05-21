@@ -16,7 +16,6 @@
 #include "spi_probe.h"
 #include "modem.h"
 #include "gnss.h"
-#include "wifi_probe.h"
 #include "button_probe.h"
 #include "test_report.h"
 
@@ -80,16 +79,11 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
  * route the antenna to the Wi-Fi path and we'll see zero APs even with a
  * healthy chip. To be resolved before expecting real scan output.
  */
-/* Note: setting RUN_WIFI_PROBE=0 only skips the scan. The nrf70 driver
- * still binds at boot (because the dts node has status="okay" and
- * sysbuild has SB_CONFIG_WIFI_NRF70=y), which means BUCKEN + IOVDD-CTL
- * get driven HIGH and the chip is powered + receives its firmware patch.
- * That's harmless — the chip just sits idle drawing standby current.
- * For *fully cold* nRF7000 (no power), disable the driver in sysbuild +
- * set status="disabled" on the nrf70 dts node.
+/* Wi-Fi probe was moved to the L15 bring-up — the nRF7000 SPI is wired
+ * to the L15 on EVT1. See evt_bringup/nrf54l15_bringup/src/wifi_probe.c
+ * for the current implementation. The 9151 used to host this as a
+ * workaround while the L15 wasn't yet running.
  */
-#define RUN_WIFI_PROBE          1
-#define WIFI_PROBE_TIMEOUT_S    30
 
 /* Set to 1 to run the hall-sensor button probe on P0.01 BEFORE the Wi-Fi
  * scan. Logs every transition + 1 Hz heartbeat showing the current level,
@@ -210,11 +204,7 @@ int main(void)
 	k_msleep(INTER_PHASE_MS);
 #endif
 
-#if RUN_WIFI_PROBE
-	LOG_INF("--- nRF7000 passive Wi-Fi scan ---");
-	wifi_passive_scan(WIFI_PROBE_TIMEOUT_S);
-	k_msleep(INTER_PHASE_MS);
-#endif
+	/* Wi-Fi probe moved to L15 bring-up. */
 
 	LOG_INF("--- LEDs walk ---");
 	leds_walk();
@@ -233,9 +223,7 @@ int main(void)
 	test_report("hall2", TEST_SKIP, "RUN_BUTTON_PROBE=0");
 	test_report("hall1", TEST_SKIP, "RUN_BUTTON_PROBE=0");
 #endif
-#if !RUN_WIFI_PROBE
-	test_report("wifi", TEST_SKIP, "RUN_WIFI_PROBE=0");
-#endif
+	test_report("wifi", TEST_SKIP, "Wi-Fi moved to L15 bring-up");
 
 	LOG_INF("bring-up complete");
 	test_report_summary(BOARD_NUMBER, FW_VERSION_STRING);

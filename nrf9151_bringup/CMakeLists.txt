@@ -17,7 +17,6 @@ target_sources(app PRIVATE
 	src/spi_probe.c
 	src/modem.c
 	src/gnss.c
-	src/wifi_probe.c
 	src/button_probe.c
 	src/test_report.c
 	src/diag.c
