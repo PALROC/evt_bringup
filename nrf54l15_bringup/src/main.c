@@ -67,31 +67,30 @@ static const struct bt_data ad[] = {
 		sizeof(CONFIG_BT_DEVICE_NAME) - 1),
 };
 
-/* Verify the SYS_INIT-parked i²c pins really did go high-Z and aren't
- * being held by anything else (a bus partner pulling, a stray short, etc.).
- * Reads the pin level back; with a 9151-side pull-up at idle the line
- * should read 1, with no pull-up it floats and may read 0 or 1.
- * Pass = the pin is configurable as input + read returned without error.
+/* Verify the L15 is the PMIC master on i2c20: both the i2c controller
+ * and the npm1300 MFD child device should be ready after driver init.
+ * If they are, the regulator driver has applied the DT init-microvolt
+ * (BUCK1 = BUCK2 = 3.3 V) — which is the fix for BUCK1 = 1.8 V (strap
+ * default) that was breaking the nRF7000. Replaces the old "verify the
+ * shared i2c pins are parked high-Z" check, which was correct when the
+ * 9151 was the PMIC master but is the opposite of what we want now.
  */
-static void test_gpio_park(void)
+static void test_pmic_master(void)
 {
-	const struct device *gpio1 = DEVICE_DT_GET(DT_NODELABEL(gpio1));
+	const struct device *i2c20 = DEVICE_DT_GET(DT_NODELABEL(i2c20));
+	const struct device *pmic  = DEVICE_DT_GET(DT_NODELABEL(npm1300_pmic));
 
-	if (!device_is_ready(gpio1)) {
-		test_report("gpio_park", TEST_FAIL, "gpio1 not ready");
+	if (!device_is_ready(i2c20)) {
+		test_report("pmic_master", TEST_FAIL, "i2c20 not ready");
 		return;
 	}
-	int sda = gpio_pin_get(gpio1, L15_I2C_SHARED_SDA_PIN);
-	int scl = gpio_pin_get(gpio1, L15_I2C_SHARED_SCL_PIN);
-
-	if (sda < 0 || scl < 0) {
-		test_report("gpio_park", TEST_FAIL,
-			    "read err sda=%d scl=%d", sda, scl);
+	if (!device_is_ready(pmic)) {
+		test_report("pmic_master", TEST_FAIL,
+			    "npm1300 device not ready — PMIC ACK on i2c?");
 		return;
 	}
-	test_report("gpio_park", TEST_PASS,
-		    "P1.4(SDA)=%d  P1.5(SCL)=%d  (high-Z, levels passive)",
-		    sda, scl);
+	test_report("pmic_master", TEST_PASS,
+		    "i2c20 + npm1300 up; expect BUCK1=BUCK2=3.3 V on multimeter");
 }
 
 int main(void)
@@ -121,7 +120,7 @@ int main(void)
 	 */
 	test_report("boot", TEST_PASS, "kernel init OK, K32SRC_RC fix held");
 
-	test_gpio_park();
+	test_pmic_master();
 
 	/* Power-path confirmed: driving P1.00/P1.01 HIGH from the app draws
 	 * ~120 mA, so the L15 pins do reach the nRF7000 load switches. The
