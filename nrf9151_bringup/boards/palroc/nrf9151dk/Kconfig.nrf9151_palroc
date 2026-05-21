@@ -1,6 +1,0 @@
-# Palroc nRF9151 board configuration
-
-# SPDX-License-Identifier: Apache-2.0
-
-config BOARD_NRF9151_PALROC
-	select SOC_NRF9151_LACA
