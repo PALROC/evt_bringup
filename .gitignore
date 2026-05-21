@@ -1,0 +1,9 @@
+# Zephyr build artefacts
+build*/
+**/build*/
+
+# Editor/OS noise
+*.swp
+.DS_Store
+.idea/
+.vscode/
