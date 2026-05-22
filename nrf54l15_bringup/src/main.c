@@ -48,13 +48,10 @@ static void compute_ble_name(void)
 /* Bring BLE up (bt_enable + bt_le_adv_start) with the chip-ID-derived
  * name. Idempotent — second + later calls just no-op.
  *
- * BLE is auto-started from main() at boot. The old (working) bring-up
- * did this too, and an active BLE radio on the L15 turns out to be
- * needed for the 9151's nRF7000 Wi-Fi scan to find any APs (the shared
- * antenna switch / RF subsystem path apparently depends on it).
- * The BLE_START message from the 9151 doesn't actually start BLE
- * (already up) — it's the "tell me your advertised name" trigger that
- * the on_uart_line() handler responds to with BLE_READY <name>. */
+ * Called only from on_uart_line() when the 9151 sends "BLE_START",
+ * which happens after the 9151 has finished its cellular + Wi-Fi tests
+ * and powered the nRF7000 off. The L15 is radio-silent until then so
+ * it can't disturb the Wi-Fi scan. */
 static void ensure_ble_advertising(void)
 {
 	if (ble_started) {
@@ -209,23 +206,22 @@ int main(void)
 	test_gpio_park();
 
 	compute_ble_name();
-	LOG_INF("BLE name: %s", ble_name);
+	LOG_INF("BLE name reserved (will advertise on BLE_START): %s",
+		ble_name);
 	test_report("ble_name", TEST_PASS, "%s", ble_name);
 
-	/* Bring up the inter-MCU link. */
+	/* Bring up the inter-MCU link. BLE is NOT started here — the L15
+	 * stays radio-silent (BLE off) through the 9151's cellular + Wi-Fi
+	 * tests, so it can't interfere with the nRF7000 scan. The 9151
+	 * sends "BLE_START" only after the Wi-Fi probe is done and the
+	 * nRF7000 is powered off; on_uart_line() then brings BLE up and
+	 * replies "BLE_READY <name>". */
 	if (uart_chat_init(on_uart_line) == 0) {
-		test_report("uart_link", TEST_PASS, "dut-uart up");
+		test_report("uart_link", TEST_PASS,
+			    "dut-uart up, waiting for BLE_START");
 	} else {
 		test_report("uart_link", TEST_FAIL, "dut-uart not ready");
 	}
-
-	/* Bring BLE up NOW (not deferred to the BLE_START handshake from the
-	 * 9151) — the old (working) bring-up did this, and the 9151's
-	 * nRF7000 Wi-Fi scan turns out to depend on the L15's BLE radio
-	 * being active (shared antenna switch / RF state). The BLE_START
-	 * message still triggers a BLE_READY reply, but advertising is up
-	 * the whole time. */
-	ensure_ble_advertising();
 
 	test_report_summary(BOARD_NUMBER, FW_VERSION_STRING);
 
