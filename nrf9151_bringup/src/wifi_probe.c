@@ -1,4 +1,5 @@
 #include <zephyr/kernel.h>
+#include <zephyr/version.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/logging/log_ctrl.h>
 #include <zephyr/drivers/gpio.h>
@@ -11,6 +12,23 @@
 #include "test_report.h"
 
 LOG_MODULE_REGISTER(wifi_probe, LOG_LEVEL_INF);
+
+/* The net_mgmt event handler's `mgmt_event` parameter was widened from
+ * uint32_t to uint64_t in Zephyr 4.1 (NCS 3.1+). Building with the
+ * wrong width is a function-pointer ABI mismatch — on 32-bit ARM
+ * (AAPCS) a uint32_t arg arrives in r1 while a uint64_t is read from
+ * r2:r3, so the handler reads garbage, NET_EVENT_WIFI_* never matches,
+ * scan results are silently dropped and the SCAN_DONE semaphore never
+ * fires (scan "times out" with 0 APs even though the chip is scanning).
+ * Pick the type that matches the SDK in use so the signature is exact.
+ *   Zephyr <  4.1 (e.g. NCS 3.0.2): uint32_t
+ *   Zephyr >= 4.1 (e.g. NCS 3.2/3.3): uint64_t
+ */
+#if KERNEL_VERSION_NUMBER >= 0x040100
+typedef uint64_t mgmt_event_t;
+#else
+typedef uint32_t mgmt_event_t;
+#endif
 
 static int wifi_best_rssi;
 
@@ -76,13 +94,13 @@ static const char *security_str(enum wifi_security_type sec)
 	}
 }
 
-/* mgmt_event is uint64_t in NCS 3.3.0 / Zephyr 4.x — it was widened from
- * uint32_t to accommodate larger event-code namespaces. With uint32_t, the
- * NET_EVENT_WIFI_* macros overflow at compile time and case-comparison
- * narrows the value, causing the wrong cases to fire (or nothing at all).
+/* mgmt_event_t is selected above to match the running SDK's net_mgmt
+ * handler signature (uint32_t pre-Zephyr-4.1, uint64_t after). Getting
+ * the width wrong is an ABI mismatch that silently breaks event
+ * delivery — see the typedef comment.
  */
 static void on_scan_event(struct net_mgmt_event_callback *cb,
-			  uint64_t mgmt_event, struct net_if *iface)
+			  mgmt_event_t mgmt_event, struct net_if *iface)
 {
 	ARG_UNUSED(iface);
 
