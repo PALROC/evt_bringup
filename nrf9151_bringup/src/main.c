@@ -17,6 +17,7 @@
 #include "modem.h"
 #include "gnss.h"
 #include "wifi_probe.h"
+#include "provisioning.h"
 #include "uart_chat.h"
 #include "test_report.h"
 
@@ -47,6 +48,13 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
  */
 #define RUN_GNSS_PROBE       1
 #define GNSS_PROBE_DURATION  300
+
+/* A-GNSS Stage B: nRF Cloud OTA provisioning. 1 = run provisioning_run()
+ * after the modem is up (one-time per board — it no-ops once the client
+ * cert is installed, so it's safe to leave on). The device must already
+ * be claimed on nRF Cloud with an auto-onboarding rule that queues the
+ * cert commands. Set to 0 to skip provisioning entirely. */
+#define RUN_PROVISIONING     1
 
 /* SPI3 bus contention test: the nRF54L15 shares SPI3 lines (SCK/MOSI/MISO)
  * with the W25Q128JV flash and LSM6DSO IMU on this board. If the L15 is
@@ -243,6 +251,15 @@ int main(void)
 	 * Remove once all boards are claimed if you want a quieter log. */
 	modem_print_attest_token();
 	k_msleep(INTER_PHASE_MS);
+
+#if RUN_PROVISIONING
+	/* A-GNSS Stage B: OTA-install the nRF Cloud device credentials.
+	 * Idempotent — no-ops once the client cert is present, so this only
+	 * does real work on the first run after the device is claimed. */
+	LOG_INF("--- nRF Cloud provisioning check ---");
+	provisioning_run();
+	k_msleep(INTER_PHASE_MS);
+#endif
 
 #if RUN_GNSS_PROBE
 	gnss_probe(GNSS_PROBE_DURATION);
