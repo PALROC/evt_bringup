@@ -11,6 +11,7 @@ project(nrf54l15_palroc_bringup)
 target_sources(app PRIVATE
 	src/main.c
 	src/test_report.c
+	src/uart_chat.c
 	# src/wifi_probe.c — Wi-Fi host is the 9151 on EVT1; see
 	# evt_bringup/nrf9151_bringup/src/wifi_probe.c
 )

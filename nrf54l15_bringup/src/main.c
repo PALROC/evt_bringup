@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <string.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/device.h>
@@ -11,8 +12,19 @@
 #include <zephyr/bluetooth/bluetooth.h>
 
 #include "test_report.h"
+#include "uart_chat.h"
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
+
+/* Smoke-test callback for the inter-MCU link. Commit 3 will replace
+ * this with the BLE-start request handler. */
+static void on_uart_line(const char *line)
+{
+	LOG_INF("[uart] <- 9151: \"%s\"", line);
+	if (strcmp(line, "HELLO_9151") == 0) {
+		uart_chat_send("HELLO_L15");
+	}
+}
 
 /* Wi-Fi (nRF7000) host = the 9151 on EVT1. See
  * evt_bringup/nrf9151_bringup/src/wifi_probe.c. The L15 doesn't run
@@ -114,6 +126,16 @@ int main(void)
 	test_report("boot", TEST_PASS, "kernel init OK, K32SRC_RC fix held");
 
 	test_gpio_park();
+
+	/* Bring up the inter-MCU link early so a HELLO_9151 from the peer
+	 * can ACK back before BLE init. Commit 3 turns this into a real
+	 * BLE-start handshake (the 9151 will request, this side replies
+	 * with the actual BT name including the chip-ID suffix). */
+	if (uart_chat_init(on_uart_line) == 0) {
+		test_report("uart_link", TEST_PASS, "dut-uart up, RX callback armed");
+	} else {
+		test_report("uart_link", TEST_FAIL, "dut-uart not ready");
+	}
 
 	/* Wi-Fi scan runs on the 9151 on EVT1 — not here. */
 

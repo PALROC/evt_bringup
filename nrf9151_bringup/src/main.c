@@ -17,6 +17,7 @@
 #include "modem.h"
 #include "gnss.h"
 #include "wifi_probe.h"
+#include "uart_chat.h"
 #include "button_probe.h"
 #include "test_report.h"
 
@@ -143,6 +144,13 @@ static void wait_for_hall2_press(void)
 	LOG_INF("Hall 2 pressed — starting demo");
 }
 
+/* Smoke-test callback for the inter-MCU link. Commit 3 will replace
+ * this with the actual demo state machine (BLE start request etc). */
+static void on_uart_line(const char *line)
+{
+	LOG_INF("[uart] <- L15: \"%s\"", line);
+}
+
 int main(void)
 {
 	LOG_INF("nRF9151 bring-up start  BOARD=%d  fw=%s  built=%s %s",
@@ -173,6 +181,13 @@ int main(void)
 
 	boot_indicator();
 	k_msleep(BOOT_SETTLE_MS);
+
+	/* Bring up the inter-MCU link before anything else so we get the
+	 * link-alive smoke test in the RTT log even if the demo never runs
+	 * (e.g. nobody presses Hall 2). The L15 mirrors this on its side. */
+	if (uart_chat_init(on_uart_line) == 0) {
+		uart_chat_send("HELLO_9151");
+	}
 
 	wait_for_hall2_press();
 
