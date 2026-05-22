@@ -11,6 +11,13 @@ void modem_probe(void);
  */
 void modem_lte_attach(void);
 
+/* Test BOTH radio access technologies in turn: set system mode to LTE-M
+ * and attempt an attach (all bands, 90 s timeout), then do the same for
+ * NB-IoT. Logs attach time + RSRP and files a separate PASS/FAIL
+ * test_report for each ("lte_m_attach", "nbiot_attach"). Leaves the
+ * modem at CFUN=0 when done. */
+void modem_lte_attach_both(void);
+
 /* Put the modem in flight mode (AT+CFUN=4): digital side fully active,
  * RF front-end disabled. Soak for `seconds` and log progress so we can
  * tell whether silent resets are RF-correlated (would NOT happen here)

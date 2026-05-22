@@ -346,3 +346,81 @@ void modem_lte_attach(void)
 		LOG_INF("%s", resp);
 	}
 }
+
+#define RAT_ATTACH_TIMEOUT_S 90
+
+/* Attach on a single RAT (LTE-M or NB-IoT), all bands, with a timeout.
+ * Reads RSRP on success and files a PASS/FAIL test_report under
+ * `report_key`. Leaves the modem at CFUN=0 on exit so the next RAT (or
+ * the rest of the demo) starts from a clean state.
+ *
+ * System mode can only be changed while the modem is non-active, so we
+ * drop to CFUN=0 first; lte_lc_connect_async() then brings it to CFUN=1.
+ */
+static void attach_one_rat(enum lte_lc_system_mode mode, const char *label,
+			   const char *report_key)
+{
+	char resp[160];
+	int err;
+
+	nrf_modem_at_printf("AT+CFUN=0");
+
+	err = lte_lc_system_mode_set(mode, LTE_LC_SYSTEM_MODE_PREFER_AUTO);
+	if (err) {
+		LOG_ERR("%s: system_mode_set failed: %d", label, err);
+		test_report(report_key, TEST_FAIL, "mode_set err %d", err);
+		return;
+	}
+	LOG_INF("--- %s attach (all bands, %d s timeout) ---", label,
+		RAT_ATTACH_TIMEOUT_S);
+
+	k_sem_reset(&lte_connected_sem);
+	int64_t t0 = k_uptime_get();
+
+	err = lte_lc_connect_async(NULL);
+	if (err && err != -EBUSY) {
+		LOG_ERR("%s: connect_async failed: %d", label, err);
+		test_report(report_key, TEST_FAIL, "connect err %d", err);
+		nrf_modem_at_printf("AT+CFUN=0");
+		return;
+	}
+
+	err = k_sem_take(&lte_connected_sem, K_SECONDS(RAT_ATTACH_TIMEOUT_S));
+	int64_t took_s = (k_uptime_get() - t0) / 1000;
+
+	if (err) {
+		LOG_WRN("%s: attach timeout after %llds", label, took_s);
+		test_report(report_key, TEST_FAIL, "timeout after %llds",
+			    took_s);
+		nrf_modem_at_printf("AT+CFUN=0");
+		return;
+	}
+
+	/* RSRP from +CESQ field 6 (raw 0..97, dBm = raw - 140; 255 = n/a). */
+	int rxlev, ber, rscp, ecn0, rsrq, rsrp_raw;
+	int rsrp_dbm = 0;
+	int n = nrf_modem_at_scanf("AT+CESQ", "+CESQ: %d,%d,%d,%d,%d,%d",
+				   &rxlev, &ber, &rscp, &ecn0, &rsrq, &rsrp_raw);
+	if (n == 6 && rsrp_raw != 255) {
+		rsrp_dbm = rsrp_raw - 140;
+	}
+
+	if (nrf_modem_at_cmd(resp, sizeof(resp), "AT%%XMONITOR") == 0) {
+		LOG_INF("%s", resp);
+	}
+
+	LOG_INF("%s: attached in %llds, RSRP %d dBm", label, took_s, rsrp_dbm);
+	test_report(report_key, TEST_PASS, "%llds, RSRP %d dBm", took_s,
+		    rsrp_dbm);
+
+	/* Drop RF so the next RAT starts clean. */
+	nrf_modem_at_printf("AT+CFUN=0");
+}
+
+void modem_lte_attach_both(void)
+{
+	lte_lc_register_handler(lte_event_handler);
+
+	attach_one_rat(LTE_LC_SYSTEM_MODE_LTEM,  "LTE-M",  "lte_m_attach");
+	attach_one_rat(LTE_LC_SYSTEM_MODE_NBIOT, "NB-IoT", "nbiot_attach");
+}

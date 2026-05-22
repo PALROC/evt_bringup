@@ -242,21 +242,21 @@ int main(void)
 	k_msleep(INTER_PHASE_MS);
 #endif
 
-	/* CFUN=4 soak passed (step 5.1 — see steps.md). Now try a low-power
-	 * attach: B8 band-lock + 1 dB TX back-off, software-only mitigations
-	 * to see if the supply can carry the reduced peak currents.
+	/* Test both radio access technologies: LTE-M then NB-IoT, all bands,
+	 * 90 s timeout each. EVT2 supply is solid, so no band-lock or TX
+	 * back-off needed. Files lte_m_attach + nbiot_attach test reports.
 	 *
-	 * To re-run the CFUN=4 isolation soak, swap the call below for:
-	 *   modem_cfun4_soak(60);
-	 * To run the unrestricted attach, swap for:
-	 *   modem_lte_attach();
+	 * Other modem options (kept in modem.c) if you need them:
+	 *   modem_band_sweep()         — per-band attach sweep diagnostic
+	 *   modem_lte_attach_lowpower()— single-band + TX back-off (old boards)
+	 *   modem_cfun4_soak(60)       — RF-off supply isolation soak
 	 */
 #if RUN_BAND_SWEEP
 	LOG_INF("--- LTE band sweep ---");
 	modem_band_sweep();
 #else
-	LOG_INF("--- LTE attach (NB-IoT, low-power, single band) ---");
-	modem_lte_attach_lowpower();
+	LOG_INF("--- LTE attach (LTE-M + NB-IoT) ---");
+	modem_lte_attach_both();
 #endif
 	k_msleep(INTER_PHASE_MS);
 
