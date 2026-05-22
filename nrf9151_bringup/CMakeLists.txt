@@ -19,7 +19,6 @@ target_sources(app PRIVATE
 	src/gnss.c
 	src/wifi_probe.c
 	src/uart_chat.c
-	src/button_probe.c
 	src/test_report.c
 	src/diag.c
 )

@@ -18,7 +18,6 @@
 #include "gnss.h"
 #include "wifi_probe.h"
 #include "uart_chat.h"
-#include "button_probe.h"
 #include "test_report.h"
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
@@ -88,16 +87,6 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
  * enforced in scan params (BUCK current limit, see steps.md step 9). */
 #define RUN_WIFI_PROBE        1
 #define WIFI_PROBE_TIMEOUT_S  30
-
-/* Set to 1 to run the hall-sensor button probe on P0.01 BEFORE the Wi-Fi
- * scan. Logs every transition + 1 Hz heartbeat showing the current level,
- * mirrors level to the red LED for live visual feedback while you wave
- * a magnet over the sensor. Useful for understanding what the sensor
- * actually does (active-high vs active-low, single transition per pass
- * vs multiple, latch behaviour, etc.).
- */
-#define RUN_BUTTON_PROBE        0
-#define BUTTON_PROBE_DURATION   60
 
 /* ===== PER-BOARD TRACKING ============================================
  * Change BOARD_NUMBER for each physical board you flash. The number
@@ -315,11 +304,6 @@ int main(void)
 #endif
 	k_msleep(INTER_PHASE_MS);
 
-#if RUN_BUTTON_PROBE
-	button_probe(BUTTON_PROBE_DURATION);
-	k_msleep(INTER_PHASE_MS);
-#endif
-
 #if RUN_WIFI_PROBE
 	LOG_INF("--- nRF7000 passive Wi-Fi scan ---");
 	wifi_passive_scan(WIFI_PROBE_TIMEOUT_S);
@@ -355,10 +339,6 @@ int main(void)
 #endif
 #if !RUN_GNSS_PROBE
 	test_report("gnss", TEST_SKIP, "RUN_GNSS_PROBE=0");
-#endif
-#if !RUN_BUTTON_PROBE
-	test_report("hall2", TEST_SKIP, "RUN_BUTTON_PROBE=0");
-	test_report("hall1", TEST_SKIP, "RUN_BUTTON_PROBE=0");
 #endif
 #if !RUN_WIFI_PROBE
 	test_report("wifi", TEST_SKIP, "RUN_WIFI_PROBE=0");
