@@ -182,14 +182,20 @@ int main(void)
 	boot_indicator();
 	k_msleep(BOOT_SETTLE_MS);
 
-	/* Bring up the inter-MCU link before anything else so we get the
-	 * link-alive smoke test in the RTT log even if the demo never runs
-	 * (e.g. nobody presses Hall 2). The L15 mirrors this on its side. */
-	if (uart_chat_init(on_uart_line) == 0) {
-		uart_chat_send("HELLO_9151");
-	}
+	/* Bring the inter-MCU link up at boot so the L15 is ready to receive
+	 * the instant we send. We don't send anything yet — the actual
+	 * exchange is triggered by the Hall 2 press below, so the RTT
+	 * timeline reads as: silent boot -> Hall press -> handshake. */
+	(void)uart_chat_init(on_uart_line);
 
 	wait_for_hall2_press();
+
+	/* Link smoke test, deliberately gated by Hall 2 so it shows up in
+	 * the demo log right after the trigger. Commit 3 replaces this with
+	 * the real BLE-start handshake. */
+	if (uart_chat_ready()) {
+		uart_chat_send("HELLO_9151");
+	}
 
 	LOG_INF("--- Modem (init + AT only) ---");
 	modem_probe();
