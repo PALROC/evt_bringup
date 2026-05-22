@@ -13,4 +13,14 @@
  */
 void gnss_probe(int duration_seconds);
 
+/* Assisted GNSS (A-GNSS). Like gnss_probe() but fetches assistance data
+ * (ephemerides/almanac/time/location) from nRF Cloud over CoAP and
+ * injects it into the modem for a fast first fix even on weak/blocked
+ * sky. Uses LTE-M + GPS coexistence (CFUN=1), so it attaches LTE and
+ * connects to nRF Cloud first — requires the device to be provisioned
+ * (see provisioning_run()). Stops early once a fix is acquired. Parks
+ * the modem at CFUN=0 on exit.
+ */
+void gnss_probe_assisted(int duration_seconds);
+
 #endif

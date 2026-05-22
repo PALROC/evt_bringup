@@ -49,6 +49,13 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #define RUN_GNSS_PROBE       1
 #define GNSS_PROBE_DURATION  300
 
+/* GNSS assistance mode. 1 = assisted (A-GNSS): fetch assistance from
+ * nRF Cloud over CoAP and inject it for a fast fix even on weak/blocked
+ * sky (requires the device provisioned — RUN_PROVISIONING). 0 = offline:
+ * cold-start GNSS with no assistance (CFUN=31), needs strong open sky.
+ * Only applies when RUN_GNSS_PROBE=1. */
+#define GNSS_ASSISTED        1
+
 /* A-GNSS Stage B: nRF Cloud OTA provisioning. 1 = run provisioning_run()
  * after the modem is up (one-time per board — it no-ops once the client
  * cert is installed, so it's safe to leave on). The device must already
@@ -262,7 +269,11 @@ int main(void)
 #endif
 
 #if RUN_GNSS_PROBE
+#if GNSS_ASSISTED
+	gnss_probe_assisted(GNSS_PROBE_DURATION);
+#else
 	gnss_probe(GNSS_PROBE_DURATION);
+#endif
 	k_msleep(INTER_PHASE_MS);
 #endif
 

@@ -3,6 +3,9 @@
 #include <nrf_modem_at.h>
 #include <nrf_modem_gnss.h>
 #include <modem/lte_lc.h>
+#include <net/nrf_cloud_coap.h>
+#include <net/nrf_cloud_agnss.h>
+#include <net/nrf_cloud_rest.h>
 
 #include "gnss.h"
 #include "test_report.h"
@@ -16,14 +19,30 @@ LOG_MODULE_REGISTER(gnss, LOG_LEVEL_INF);
 static struct nrf_modem_gnss_pvt_data_frame latest_pvt;
 static atomic_t pvt_count = ATOMIC_INIT(0);
 
+/* A-GNSS assistance request raised by the modem (Stage C). Captured in
+ * the GNSS event handler when NRF_MODEM_GNSS_EVT_AGNSS_REQ fires, then
+ * serviced from the probe loop (the CoAP fetch is blocking, so it must
+ * not run in the event-handler context). */
+static struct nrf_modem_gnss_agnss_data_frame agnss_req;
+static atomic_t agnss_req_pending = ATOMIC_INIT(0);
+
 static void gnss_event_handler(int event)
 {
-	if (event != NRF_MODEM_GNSS_EVT_PVT) {
-		return;
-	}
-	if (nrf_modem_gnss_read(&latest_pvt, sizeof(latest_pvt),
-				NRF_MODEM_GNSS_DATA_PVT) == 0) {
-		atomic_inc(&pvt_count);
+	switch (event) {
+	case NRF_MODEM_GNSS_EVT_PVT:
+		if (nrf_modem_gnss_read(&latest_pvt, sizeof(latest_pvt),
+					NRF_MODEM_GNSS_DATA_PVT) == 0) {
+			atomic_inc(&pvt_count);
+		}
+		break;
+	case NRF_MODEM_GNSS_EVT_AGNSS_REQ:
+		if (nrf_modem_gnss_read(&agnss_req, sizeof(agnss_req),
+					NRF_MODEM_GNSS_DATA_AGNSS_REQ) == 0) {
+			atomic_set(&agnss_req_pending, 1);
+		}
+		break;
+	default:
+		break;
 	}
 }
 
@@ -267,4 +286,182 @@ void gnss_probe(int duration_seconds)
 		    "max_SV=%d  best_cn0=%u.%u dB-Hz  fix=%s",
 		    max_tracked, best_cn0_seen / 10, best_cn0_seen % 10,
 		    got_fix ? "YES" : "no");
+}
+
+/* Fetch the A-GNSS assistance the modem asked for from nRF Cloud over
+ * CoAP and inject it into the modem. Assumes nRF Cloud CoAP is already
+ * connected. Buffer holds one assistance response (~3.5 KB is the
+ * typical full set; sized with headroom). */
+static void agnss_fetch_and_process(void)
+{
+	static char agnss_buf[4096];
+	struct nrf_cloud_rest_agnss_request request = {
+		.type = NRF_CLOUD_REST_AGNSS_REQ_CUSTOM,
+		.agnss_req = &agnss_req,
+	};
+	struct nrf_cloud_rest_agnss_result result = {
+		.buf = agnss_buf,
+		.buf_sz = sizeof(agnss_buf),
+	};
+	int err;
+
+	LOG_INF("A-GNSS: requesting assistance from nRF Cloud...");
+	err = nrf_cloud_coap_agnss_data_get(&request, &result);
+	if (err) {
+		LOG_ERR("A-GNSS: data_get failed: %d", err);
+		test_report("agnss", TEST_FAIL, "data_get err %d", err);
+		return;
+	}
+
+	err = nrf_cloud_agnss_process(result.buf, result.agnss_sz);
+	if (err) {
+		LOG_ERR("A-GNSS: process failed: %d", err);
+		test_report("agnss", TEST_FAIL, "process err %d", err);
+		return;
+	}
+
+	LOG_INF("A-GNSS: injected %zu bytes of assistance into the modem",
+		result.agnss_sz);
+	test_report("agnss", TEST_PASS, "injected %zu bytes", result.agnss_sz);
+}
+
+void gnss_probe_assisted(int duration_seconds)
+{
+	char resp[160];
+	int err;
+
+	LOG_INF("--- GNSS probe (assisted, %d s) ---", duration_seconds);
+
+	/* A-GNSS needs LTE up to fetch assistance, so use LTE-M + GPS in the
+	 * system mode (modem time-shares the two) and CFUN=1 — NOT the
+	 * offline CFUN=31 path the unassisted gnss_probe() uses. */
+	nrf_modem_at_printf("AT+CFUN=0");
+	err = lte_lc_system_mode_set(LTE_LC_SYSTEM_MODE_LTEM_GPS,
+				     LTE_LC_SYSTEM_MODE_PREFER_AUTO);
+	if (err) {
+		LOG_ERR("system_mode_set(LTEM_GPS) failed: %d", err);
+		test_report("gnss", TEST_FAIL, "mode set err %d", err);
+		return;
+	}
+
+	LOG_INF("attaching LTE for A-GNSS...");
+	err = lte_lc_connect();
+	if (err) {
+		LOG_ERR("LTE attach failed: %d", err);
+		test_report("gnss", TEST_FAIL, "LTE attach err %d", err);
+		return;
+	}
+
+	/* Connect to nRF Cloud over CoAP using the provisioned credentials. */
+	err = nrf_cloud_coap_init();
+	if (err) {
+		LOG_ERR("nrf_cloud_coap_init failed: %d", err);
+		test_report("gnss", TEST_FAIL, "coap_init err %d", err);
+		return;
+	}
+	LOG_INF("connecting to nRF Cloud (CoAP)...");
+	err = nrf_cloud_coap_connect(NULL);
+	if (err) {
+		LOG_ERR("nrf_cloud_coap_connect failed: %d (provisioned?)", err);
+		test_report("gnss", TEST_FAIL, "coap_connect err %d", err);
+		return;
+	}
+	LOG_INF("nRF Cloud connected");
+
+	/* COEX0 -> external GNSS LNA enable (same as the offline path). */
+	if (nrf_modem_at_cmd(resp, sizeof(resp),
+			     "AT%%XCOEX0=1,1,1565,1586") == 0) {
+		LOG_INF("COEX0 -> GNSS L1 LNA enabled");
+	}
+
+	err = nrf_modem_gnss_event_handler_set(gnss_event_handler);
+	if (err) {
+		LOG_ERR("gnss_event_handler_set failed: %d", err);
+		test_report("gnss", TEST_FAIL, "evt handler err %d", err);
+		return;
+	}
+	(void)nrf_modem_gnss_fix_interval_set(1);
+	(void)nrf_modem_gnss_fix_retry_set(0);
+
+	atomic_set(&pvt_count, 0);
+	atomic_set(&agnss_req_pending, 0);
+	memset(&latest_pvt, 0, sizeof(latest_pvt));
+
+	err = nrf_modem_gnss_start();
+	if (err) {
+		LOG_ERR("nrf_modem_gnss_start failed: %d", err);
+		test_report("gnss", TEST_FAIL, "gnss_start err %d", err);
+		return;
+	}
+	LOG_INF("GNSS started (assisted), tracking for %d s...", duration_seconds);
+
+	uint16_t best_cn0_seen = 0;
+	int max_tracked = 0;
+	int64_t fix_at_ms = 0;
+
+	for (int t = 1; t <= duration_seconds; t++) {
+		k_sleep(K_SECONDS(1));
+
+		/* Service an A-GNSS request raised by the modem (deferred here
+		 * from the event handler — the CoAP fetch is blocking). */
+		if (atomic_cas(&agnss_req_pending, 1, 0)) {
+			agnss_fetch_and_process();
+		}
+
+		int tracked, used_in_fix;
+		uint16_t max_cn0;
+
+		summarise_pvt(&tracked, &max_cn0, &used_in_fix);
+		if (tracked > max_tracked) {
+			max_tracked = tracked;
+		}
+		if (max_cn0 > best_cn0_seen) {
+			best_cn0_seen = max_cn0;
+		}
+
+		bool fix = (latest_pvt.flags &
+			    NRF_MODEM_GNSS_PVT_FLAG_FIX_VALID) != 0;
+
+		if (fix && fix_at_ms == 0) {
+			fix_at_ms = k_uptime_get();
+			LOG_INF("=== FIX acquired at t=%ds (assisted) ===", t);
+			log_fix_position();
+		}
+
+		if (t % 5 == 0) {
+			LOG_INF("  t=%3ds  tracked=%d  in_fix=%d  max_cn0=%u.%u "
+				"dB-Hz  fix=%s", t, tracked, used_in_fix,
+				max_cn0 / 10, max_cn0 % 10, fix ? "YES" : "no");
+			if (tracked > 0) {
+				log_satellites();
+			}
+		}
+
+		/* Once we have a fix, no need to keep the cell + LNA burning;
+		 * stop early so the demo moves on. */
+		if (fix) {
+			break;
+		}
+	}
+
+	(void)nrf_modem_gnss_stop();
+	(void)nrf_cloud_coap_disconnect();
+	(void)nrf_modem_at_cmd(resp, sizeof(resp), "AT+CFUN=0");
+
+	bool got_fix = fix_at_ms != 0;
+
+	LOG_INF("--- assisted GNSS complete: fix=%s, max_tracked=%d, "
+		"best_cn0=%u.%u dB-Hz ---", got_fix ? "YES" : "no",
+		max_tracked, best_cn0_seen / 10, best_cn0_seen % 10);
+
+	if (got_fix) {
+		test_report("gnss", TEST_PASS,
+			    "assisted fix in %llds, max_SV=%d, best_cn0=%u.%u",
+			    fix_at_ms / 1000, max_tracked,
+			    best_cn0_seen / 10, best_cn0_seen % 10);
+	} else {
+		test_report("gnss", TEST_INFO,
+			    "no fix; max_SV=%d best_cn0=%u.%u dB-Hz",
+			    max_tracked, best_cn0_seen / 10, best_cn0_seen % 10);
+	}
 }
