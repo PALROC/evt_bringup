@@ -64,7 +64,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
  * SPI3 bus contention debugging — leave at 0 once you actually want the
  * L15 to boot.
  */
-#define HOLD_L15_IN_RESET 1
+#define HOLD_L15_IN_RESET 0
 #define L15_NRESET_PIN    19
 
 /* Set to 1 to run a single passive Wi-Fi scan via the nRF7000 on SPI1.
@@ -112,6 +112,37 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #define BOARD_NUMBER       4
 #define FW_VERSION_STRING  "0.15.0-step16-testreport"
 
+/* Gate the whole probe sequence behind a Hall-2 press so the demo starts
+ * on a deliberate trigger. Hall-2 is on P0.01, active-LOW (pressed = 0).
+ * Polls at 50 ms intervals; the pin is configured as input with internal
+ * pull-up (safe whether the sensor is open-drain or push-pull). */
+#define HALL2_PIN              1
+#define HALL2_POLL_INTERVAL_MS 50
+
+static void wait_for_hall2_press(void)
+{
+	const struct device *gpio0 = DEVICE_DT_GET(DT_NODELABEL(gpio0));
+
+	if (!device_is_ready(gpio0)) {
+		LOG_ERR("gpio0 not ready, cannot read Hall 2 — running anyway");
+		return;
+	}
+	(void)gpio_pin_configure(gpio0, HALL2_PIN, GPIO_INPUT | GPIO_PULL_UP);
+
+	LOG_INF("waiting for Hall 2 (P0.%d) press to start the demo...",
+		HALL2_PIN);
+	uint32_t ticks = 0;
+	while (gpio_pin_get(gpio0, HALL2_PIN) != 0) {
+		k_msleep(HALL2_POLL_INTERVAL_MS);
+		ticks++;
+		if (ticks % (1000 / HALL2_POLL_INTERVAL_MS) == 0) {
+			LOG_INF("  still waiting on Hall 2 (t=%u s)...",
+				ticks / (1000 / HALL2_POLL_INTERVAL_MS));
+		}
+	}
+	LOG_INF("Hall 2 pressed — starting demo");
+}
+
 int main(void)
 {
 	LOG_INF("nRF9151 bring-up start  BOARD=%d  fw=%s  built=%s %s",
@@ -142,6 +173,8 @@ int main(void)
 
 	boot_indicator();
 	k_msleep(BOOT_SETTLE_MS);
+
+	wait_for_hall2_press();
 
 	LOG_INF("--- Modem (init + AT only) ---");
 	modem_probe();
@@ -204,6 +237,10 @@ int main(void)
 #if DT_NODE_HAS_STATUS(DT_NODELABEL(lsm6dso), okay)
 	LOG_INF("--- I2C2 IMU @ 0x6a (EVT2) ---");
 	i2c_imu_whoami();
+	/* Real-data smoke test: read one accelerometer sample and log it
+	 * in m/s². With the board flat you should see ~9.81 on Z (or
+	 * whichever axis is vertical for your orientation). */
+	i2c_imu_accel_read();
 #else
 	LOG_INF("--- SPI3 IMU @ CS=P0.16 (EVT1) ---");
 	spi_imu_whoami();

@@ -14,4 +14,10 @@ void i2c_scan(void);
  * spi_imu_whoami() and is selected on EVT1 (see main.c). */
 void i2c_imu_whoami(void);
 
+/* Configure the LSM6DSO accelerometer (104 Hz, +/-2 g), wait for one
+ * sample to be ready, read X/Y/Z and log the values converted to m/s².
+ * Magnitude should be ~9.81 m/s² at rest — sanity-check PASS/FAIL keys
+ * off |g| being within [8.5, 11.0]. */
+void i2c_imu_accel_read(void);
+
 #endif
