@@ -14,6 +14,7 @@
 #include <modem/modem_key_mgmt.h>
 #include <nrf_modem_at.h>
 #include <net/nrf_provisioning.h>
+#include <date_time.h>
 
 #include "provisioning.h"
 #include "test_report.h"
@@ -119,6 +120,36 @@ bool provisioning_run(void)
 	nrf_modem_at_printf("AT+CFUN=0");
 	(void)lte_lc_system_mode_set(LTE_LC_SYSTEM_MODE_LTEM,
 				     LTE_LC_SYSTEM_MODE_PREFER_AUTO);
+
+	/* The provisioning client needs an active LTE connection (to resolve
+	 * + reach the service) AND valid network time (for the JWT/DTLS) BEFORE
+	 * it's triggered — the lib's modem-mode callback only toggles
+	 * offline/online to write creds, it does not do the initial attach. */
+	LOG_INF("attaching LTE for provisioning...");
+	err = lte_lc_connect();
+	if (err) {
+		LOG_ERR("LTE attach failed: %d", err);
+		test_report("provisioning", TEST_FAIL, "LTE attach err %d", err);
+		return false;
+	}
+
+	LOG_INF("waiting for network time...");
+	(void)date_time_update_async(NULL);
+	bool have_time = false;
+	for (int i = 0; i < 30; i++) {
+		int64_t ts;
+
+		if (date_time_now(&ts) == 0) {
+			have_time = true;
+			break;
+		}
+		k_sleep(K_SECONDS(2));
+	}
+	if (!have_time) {
+		LOG_WRN("no network time after 60s — provisioning may fail");
+	} else {
+		LOG_INF("network time acquired");
+	}
 
 	err = nrf_provisioning_init(&mmode, &dmode);
 	if (err) {
