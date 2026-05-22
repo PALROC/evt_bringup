@@ -238,6 +238,12 @@ int main(void)
 	modem_probe();
 	k_msleep(INTER_PHASE_MS);
 
+	/* Print the nRF Cloud claim token to RTT (one-time onboarding step
+	 * for A-GNSS). Harmless to leave in — it's the same token each boot.
+	 * Remove once all boards are claimed if you want a quieter log. */
+	modem_print_attest_token();
+	k_msleep(INTER_PHASE_MS);
+
 #if RUN_GNSS_PROBE
 	gnss_probe(GNSS_PROBE_DURATION);
 	k_msleep(INTER_PHASE_MS);

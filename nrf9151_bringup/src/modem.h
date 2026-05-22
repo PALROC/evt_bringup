@@ -6,6 +6,12 @@
  */
 void modem_probe(void);
 
+/* Print the device identity attestation token (AT%ATTESTTOKEN) to the
+ * log. This is the token pasted into the nRF Cloud portal to claim the
+ * device. Requires the modem to be initialised (call after
+ * modem_probe()). No network attach needed. */
+void modem_print_attest_token(void);
+
 /* Blocking lte_lc_connect with live CEREG event logging. Reads signal
  * quality (+CESQ, %XMONITOR) once attached. Returns immediately on error.
  */

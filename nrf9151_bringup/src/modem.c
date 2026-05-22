@@ -62,6 +62,33 @@ void modem_probe(void)
 	}
 }
 
+void modem_print_attest_token(void)
+{
+	char resp[320];
+	int err;
+
+	/* AT%ATTESTTOKEN returns the device identity attestation token —
+	 * the Base64url string (between quotes) you paste into the nRF Cloud
+	 * portal under Security Services -> Claimed Devices -> Claim Device.
+	 * Printed to RTT so no UART AT shell is needed on this board.
+	 * Requires the modem to be initialised (call after modem_probe()).
+	 */
+	err = nrf_modem_at_cmd(resp, sizeof(resp), "AT%%ATTESTTOKEN");
+	if (err) {
+		LOG_ERR("AT%%ATTESTTOKEN failed: %d", err);
+		test_report("attest_token", TEST_FAIL, "AT err %d", err);
+		return;
+	}
+
+	LOG_INF("================ nRF CLOUD CLAIM TOKEN ================");
+	LOG_INF("%s", resp);
+	LOG_INF("Copy the string between the quotes into nRF Cloud ->");
+	LOG_INF("Security Services -> Claimed Devices -> Claim Device,");
+	LOG_INF("with an auto-onboarding rule that provisions CoAP certs.");
+	LOG_INF("======================================================");
+	test_report("attest_token", TEST_INFO, "printed to RTT");
+}
+
 static K_SEM_DEFINE(lte_connected_sem, 0, 1);
 
 static const char *reg_str(enum lte_lc_nw_reg_status s)
