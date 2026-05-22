@@ -16,6 +16,7 @@
 #include "spi_probe.h"
 #include "modem.h"
 #include "gnss.h"
+#include "wifi_probe.h"
 #include "button_probe.h"
 #include "test_report.h"
 
@@ -63,7 +64,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
  * SPI3 bus contention debugging — leave at 0 once you actually want the
  * L15 to boot.
  */
-#define HOLD_L15_IN_RESET 0
+#define HOLD_L15_IN_RESET 1
 #define L15_NRESET_PIN    19
 
 /* Set to 1 to run a single passive Wi-Fi scan via the nRF7000 on SPI1.
@@ -79,11 +80,13 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
  * route the antenna to the Wi-Fi path and we'll see zero APs even with a
  * healthy chip. To be resolved before expecting real scan output.
  */
-/* Wi-Fi probe was moved to the L15 bring-up — the nRF7000 SPI is wired
- * to the L15 on EVT1. See evt_bringup/nrf54l15_bringup/src/wifi_probe.c
- * for the current implementation. The 9151 used to host this as a
- * workaround while the L15 wasn't yet running.
- */
+/* Set to 1 to run a single passive Wi-Fi scan via the nRF7000 on SPI1.
+ * Logs every AP found (SSID / BSSID / channel / RSSI / security). The
+ * driver handles BUCKEN + IOVDD-CTL + firmware patch upload internally;
+ * the bring-up just needs a wifi_mgmt scan request. Passive-only is
+ * enforced in scan params (BUCK current limit, see steps.md step 9). */
+#define RUN_WIFI_PROBE        1
+#define WIFI_PROBE_TIMEOUT_S  30
 
 /* Set to 1 to run the hall-sensor button probe on P0.01 BEFORE the Wi-Fi
  * scan. Logs every transition + 1 Hz heartbeat showing the current level,
@@ -212,7 +215,11 @@ int main(void)
 	k_msleep(INTER_PHASE_MS);
 #endif
 
-	/* Wi-Fi probe moved to L15 bring-up. */
+#if RUN_WIFI_PROBE
+	LOG_INF("--- nRF7000 passive Wi-Fi scan ---");
+	wifi_passive_scan(WIFI_PROBE_TIMEOUT_S);
+	k_msleep(INTER_PHASE_MS);
+#endif
 
 	LOG_INF("--- LEDs walk ---");
 	leds_walk();
@@ -231,7 +238,9 @@ int main(void)
 	test_report("hall2", TEST_SKIP, "RUN_BUTTON_PROBE=0");
 	test_report("hall1", TEST_SKIP, "RUN_BUTTON_PROBE=0");
 #endif
-	test_report("wifi", TEST_SKIP, "Wi-Fi moved to L15 bring-up");
+#if !RUN_WIFI_PROBE
+	test_report("wifi", TEST_SKIP, "RUN_WIFI_PROBE=0");
+#endif
 
 	LOG_INF("bring-up complete");
 	test_report_summary(BOARD_NUMBER, FW_VERSION_STRING);

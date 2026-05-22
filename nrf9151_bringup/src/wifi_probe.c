@@ -20,25 +20,22 @@ static int wifi_best_rssi;
  * for explicit calls from app code (e.g., on a button press). Idempotent
  * and ISR-safe — just toggles two GPIOs.
  *
- * Pins come from the labelled nodes in the nova L15 board dtsi
- * (wifi_buck_en, wifi_vddio_ctrl) — same physical pins the nrf70
- * driver references via bucken-gpios / iovdd-ctrl-gpios on &nrf70.
- * Looking them up by node label keeps this code board-portable and
- * removes the hardcoded P0.28/P0.29 leftover from the 9151 era.
+ * Pins are the 9151's P0.28 (BUCK_EN) and P0.29 (IOVDD_CTL), the same
+ * physical pins the nrf70 driver references via bucken-gpios /
+ * iovdd-ctrl-gpios on &nrf70 in the nova 9151 board dtsi.
  */
-static const struct gpio_dt_spec wifi_bucken =
-	GPIO_DT_SPEC_GET(DT_NODELABEL(wifi_buck_en), gpios);
-static const struct gpio_dt_spec wifi_iovdd =
-	GPIO_DT_SPEC_GET(DT_NODELABEL(wifi_vddio_ctrl), gpios);
+#define NRF7000_BUCKEN_PIN   28
+#define NRF7000_IOVDDCTL_PIN 29
 
 void wifi_emergency_off(void)
 {
-	if (device_is_ready(wifi_iovdd.port)) {
-		(void)gpio_pin_configure_dt(&wifi_iovdd, GPIO_OUTPUT_INACTIVE);
+	const struct device *gpio0 = DEVICE_DT_GET(DT_NODELABEL(gpio0));
+
+	if (!device_is_ready(gpio0)) {
+		return;
 	}
-	if (device_is_ready(wifi_bucken.port)) {
-		(void)gpio_pin_configure_dt(&wifi_bucken, GPIO_OUTPUT_INACTIVE);
-	}
+	(void)gpio_pin_configure(gpio0, NRF7000_IOVDDCTL_PIN, GPIO_OUTPUT_LOW);
+	(void)gpio_pin_configure(gpio0, NRF7000_BUCKEN_PIN,   GPIO_OUTPUT_LOW);
 }
 
 /* Zephyr fatal-error hook. Called BEFORE the fault dump prints, so the

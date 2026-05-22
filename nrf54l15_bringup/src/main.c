@@ -11,21 +11,12 @@
 #include <zephyr/bluetooth/bluetooth.h>
 
 #include "test_report.h"
-#include "wifi_probe.h"
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
-/* Wi-Fi (nRF7000) bring-up moved here from the 9151 side. The chip's
- * SPI is wired to the L15 on EVT1; the 9151 used to host the driver
- * as a workaround while the L15 wasn't yet running.
- *
- * Note: the nrf70 driver binds at boot regardless of whether we call
- * wifi_passive_scan() — DT node has status="okay" + sysbuild sets
- * SB_CONFIG_WIFI_NRF70=y — so BUCKEN + IOVDD-CTL come up either way.
- * For *fully cold* nRF7000, disable the driver in sysbuild.conf and
- * set the nrf70 dts node to status="disabled".
- */
-#define WIFI_PROBE_TIMEOUT_S    30
+/* Wi-Fi (nRF7000) host = the 9151 on EVT1. See
+ * evt_bringup/nrf9151_bringup/src/wifi_probe.c. The L15 doesn't run
+ * the Wi-Fi stack here. */
 
 /* ===== PER-BOARD TRACKING ============================================
  * Change BOARD_NUMBER to match the physical board you're flashing.
@@ -124,8 +115,7 @@ int main(void)
 
 	test_gpio_park();
 
-	LOG_INF("--- nRF7000 passive Wi-Fi scan ---");
-	wifi_passive_scan(WIFI_PROBE_TIMEOUT_S);
+	/* Wi-Fi scan runs on the 9151 on EVT1 — not here. */
 
 	err = bt_enable(NULL);
 	if (err) {
