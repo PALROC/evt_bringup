@@ -197,6 +197,50 @@ static void trigger_l15_ble(void)
 	test_report("ble_trigger", TEST_PASS, "L15: %s", ble_peer_name);
 }
 
+/* Hold / release the nRF54L15 via its NRESET line on 9151 P0.19. The
+ * pin has a 10 kΩ pull-up to 3V3 on the L15 side, so driving the 9151
+ * pin LOW overrides the pull-up and holds the L15 in reset (all its
+ * GPIOs go high-Z, its radios shut down). Releasing as
+ * GPIO_INPUT | GPIO_DISCONNECTED lets the pull-up bring the line back
+ * high so the L15 boots normally.
+ *
+ * Why we do this: any L15 activity (BLE radio, GPIOTE for sw-lpuart,
+ * etc.) interferes with the 9151's nRF7000 Wi-Fi scan — the original
+ * NMS bring-up confirmed Wi-Fi only ever worked when the L15 was
+ * erased. So we silence the L15 around the Wi-Fi window. After the
+ * scan and the nRF7000 power-down, we release the L15 so it boots
+ * fresh, runs its SYS_INIT (RFFE_BLE_WIFI_ENABLE high, pin park),
+ * brings up BLE, and is ready for the BLE_START handshake.
+ */
+static void hold_l15_in_reset(void)
+{
+	const struct device *gpio0 = DEVICE_DT_GET(DT_NODELABEL(gpio0));
+
+	if (!device_is_ready(gpio0)) {
+		LOG_ERR("gpio0 not ready — can't hold L15 in reset");
+		return;
+	}
+	gpio_pin_configure(gpio0, L15_NRESET_PIN, GPIO_OUTPUT_LOW);
+	LOG_INF("L15 held in reset (P0.%d LOW)", L15_NRESET_PIN);
+}
+
+static void release_l15_from_reset(void)
+{
+	const struct device *gpio0 = DEVICE_DT_GET(DT_NODELABEL(gpio0));
+
+	if (!device_is_ready(gpio0)) {
+		LOG_ERR("gpio0 not ready — can't release L15");
+		return;
+	}
+	/* Brief HIGH drive to defeat any line capacitance, then disconnect
+	 * so the L15's 10 kΩ pull-up takes over for steady-state. */
+	gpio_pin_configure(gpio0, L15_NRESET_PIN, GPIO_OUTPUT_HIGH);
+	k_msleep(1);
+	gpio_pin_configure(gpio0, L15_NRESET_PIN,
+			   GPIO_INPUT | GPIO_DISCONNECTED);
+	LOG_INF("L15 released — pull-up brings NRESET high; ~2 s to boot");
+}
+
 int main(void)
 {
 	LOG_INF("nRF9151 bring-up start  BOARD=%d  fw=%s  built=%s %s",
@@ -321,6 +365,13 @@ int main(void)
 #endif
 
 #if RUN_WIFI_PROBE
+	/* L15 must be silent for the nRF7000 Wi-Fi scan to find any APs
+	 * (the original NMS test confirmed Wi-Fi only worked when the L15
+	 * was erased). Hold the L15 in reset just before the scan; we'll
+	 * release it after wifi_emergency_off so BLE can come back up. */
+	hold_l15_in_reset();
+	k_msleep(50);
+
 	LOG_INF("--- nRF7000 passive Wi-Fi scan ---");
 	wifi_passive_scan(WIFI_PROBE_TIMEOUT_S);
 	k_msleep(INTER_PHASE_MS);
@@ -334,6 +385,13 @@ int main(void)
 	test_report("wifi_off", TEST_PASS,
 		    "BUCK_EN + IOVDD_CTL low — chip unpowered");
 	k_msleep(INTER_PHASE_MS);
+
+	/* Wi-Fi window is over — wake the L15 back up. ~2 s for its
+	 * kernel + TF-M + SYS_INIT + uart_chat + bt_enable +
+	 * bt_le_adv_start to complete; trigger_l15_ble() also gives a
+	 * 10 s response timeout, so this is conservative. */
+	release_l15_from_reset();
+	k_msleep(2000);
 #endif
 
 	/* Phase 5: hand off to the L15 for BLE. */
