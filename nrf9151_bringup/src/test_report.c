@@ -6,6 +6,7 @@
 
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/drivers/hwinfo.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -13,6 +14,26 @@
 #include "test_report.h"
 
 LOG_MODULE_REGISTER(test_report, LOG_LEVEL_INF);
+
+/* Factory-programmed unique device ID (from FICR via the hwinfo driver).
+ * Identifies the physical SoC unambiguously — far better than a manually
+ * edited BOARD_NUMBER for telling boards apart in test logs. Formats up
+ * to 16 ID bytes as a lowercase hex string into `out` (must hold at
+ * least 2*16+1 bytes). Returns the number of ID bytes, or <=0 on error. */
+static int format_chip_id(char *out, size_t out_len)
+{
+	uint8_t id[16];
+	ssize_t n = hwinfo_get_device_id(id, sizeof(id));
+
+	if (n <= 0) {
+		snprintf(out, out_len, "<unavailable:%d>", (int)n);
+		return (int)n;
+	}
+	for (ssize_t i = 0; i < n && (size_t)(2 * i + 1) < out_len; i++) {
+		snprintf(out + 2 * i, 3, "%02x", id[i]);
+	}
+	return (int)n;
+}
 
 #define MAX_TESTS       24
 #define MAX_NAME_LEN    24
@@ -71,10 +92,14 @@ static const char *result_str(test_result_t r)
 void test_report_summary(int board_number, const char *fw_version)
 {
 	int pass = 0, fail = 0, skip = 0, info = 0;
+	char chip_id[2 * 16 + 1] = {0};
+
+	(void)format_chip_id(chip_id, sizeof(chip_id));
 
 	LOG_INF("");
 	LOG_INF("=========================================================");
-	LOG_INF("=== BOARD %d  fw=%s  TEST SUMMARY ===",
+	LOG_INF("=== CHIP ID %s ===", chip_id);
+	LOG_INF("=== board#%d  fw=%s  TEST SUMMARY ===",
 		board_number, fw_version ? fw_version : "?");
 	LOG_INF("=========================================================");
 	for (int i = 0; i < n_records; i++) {
@@ -90,8 +115,8 @@ void test_report_summary(int board_number, const char *fw_version)
 			records[i].detail);
 	}
 	LOG_INF("---------------------------------------------------------");
-	LOG_INF("=== BOARD %d totals: PASS=%d  FAIL=%d  INFO=%d  SKIP=%d ===",
-		board_number, pass, fail, info, skip);
+	LOG_INF("=== CHIP %s  totals: PASS=%d  FAIL=%d  INFO=%d  SKIP=%d ===",
+		chip_id, pass, fail, info, skip);
 	LOG_INF("=========================================================");
 	LOG_INF("");
 }
