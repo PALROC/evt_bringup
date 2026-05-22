@@ -45,18 +45,19 @@ static void compute_ble_name(void)
 		 id[n - 3], id[n - 2], id[n - 1]);
 }
 
-/* Start BLE advertising with the chip-ID-derived name, then reply to
- * the 9151 with BLE_READY <name>. Idempotent: if BLE is already up
- * from a previous BLE_START (the user pressed Hall 2 again), we just
- * re-send the ack so the 9151 sees a consistent response. */
-static void start_ble_advertising(void)
+/* Bring BLE up (bt_enable + bt_le_adv_start) with the chip-ID-derived
+ * name. Idempotent — second + later calls just no-op.
+ *
+ * BLE is auto-started from main() at boot. The old (working) bring-up
+ * did this too, and an active BLE radio on the L15 turns out to be
+ * needed for the 9151's nRF7000 Wi-Fi scan to find any APs (the shared
+ * antenna switch / RF subsystem path apparently depends on it).
+ * The BLE_START message from the 9151 doesn't actually start BLE
+ * (already up) — it's the "tell me your advertised name" trigger that
+ * the on_uart_line() handler responds to with BLE_READY <name>. */
+static void ensure_ble_advertising(void)
 {
-	char reply[UART_CHAT_LINE_MAX];
-
 	if (ble_started) {
-		LOG_INF("BLE already advertising; re-sending BLE_READY");
-		snprintf(reply, sizeof(reply), "BLE_READY %s", ble_name);
-		uart_chat_send(reply);
 		return;
 	}
 
@@ -64,7 +65,6 @@ static void start_ble_advertising(void)
 	if (err) {
 		LOG_ERR("bt_enable failed: %d", err);
 		test_report("ble_init", TEST_FAIL, "bt_enable err %d", err);
-		uart_chat_send("BLE_FAIL bt_enable");
 		return;
 	}
 	LOG_INF("BT stack initialised");
@@ -81,16 +81,12 @@ static void start_ble_advertising(void)
 		LOG_ERR("bt_le_adv_start failed: %d", err);
 		test_report("ble_advertise", TEST_FAIL,
 			    "bt_le_adv_start err %d", err);
-		uart_chat_send("BLE_FAIL adv_start");
 		return;
 	}
 
 	LOG_INF("Advertising as \"%s\" (non-connectable)", ble_name);
 	test_report("ble_advertise", TEST_PASS, "name=\"%s\"", ble_name);
 	ble_started = true;
-
-	snprintf(reply, sizeof(reply), "BLE_READY %s", ble_name);
-	uart_chat_send(reply);
 }
 
 /* RX callback. Runs on the system workqueue (not in ISR context), so
@@ -100,7 +96,19 @@ static void on_uart_line(const char *line)
 	LOG_INF("[uart] <- 9151: \"%s\"", line);
 
 	if (strcmp(line, "BLE_START") == 0) {
-		start_ble_advertising();
+		/* Ensure BLE is up (idempotent — usually already up from
+		 * the boot-time auto-start), then announce the name back
+		 * to the 9151 so the demo log shows the trigger landed and
+		 * the advertised name is current. */
+		char reply[UART_CHAT_LINE_MAX];
+		ensure_ble_advertising();
+		if (ble_started) {
+			snprintf(reply, sizeof(reply), "BLE_READY %s",
+				 ble_name);
+			uart_chat_send(reply);
+		} else {
+			uart_chat_send("BLE_FAIL adv_start");
+		}
 	} else if (strcmp(line, "HELLO_9151") == 0) {
 		/* Link smoke test from commit 2 still answered — handy for
 		 * debugging the link in isolation without triggering BLE. */
@@ -201,21 +209,23 @@ int main(void)
 	test_gpio_park();
 
 	compute_ble_name();
-	LOG_INF("BLE name reserved (will advertise on BLE_START): %s",
-		ble_name);
+	LOG_INF("BLE name: %s", ble_name);
 	test_report("ble_name", TEST_PASS, "%s", ble_name);
 
-	/* Bring up the inter-MCU link. BLE itself is NOT started here —
-	 * the 9151 triggers it by sending "BLE_START" over the link once
-	 * it has finished the cellular + Wi-Fi probes and powered the
-	 * nRF7000 down. on_uart_line() handles the actual bt_enable +
-	 * advertising start, then sends "BLE_READY <name>" back. */
+	/* Bring up the inter-MCU link. */
 	if (uart_chat_init(on_uart_line) == 0) {
-		test_report("uart_link", TEST_PASS,
-			    "dut-uart up, waiting for BLE_START");
+		test_report("uart_link", TEST_PASS, "dut-uart up");
 	} else {
 		test_report("uart_link", TEST_FAIL, "dut-uart not ready");
 	}
+
+	/* Bring BLE up NOW (not deferred to the BLE_START handshake from the
+	 * 9151) — the old (working) bring-up did this, and the 9151's
+	 * nRF7000 Wi-Fi scan turns out to depend on the L15's BLE radio
+	 * being active (shared antenna switch / RF state). The BLE_START
+	 * message still triggers a BLE_READY reply, but advertising is up
+	 * the whole time. */
+	ensure_ble_advertising();
 
 	test_report_summary(BOARD_NUMBER, FW_VERSION_STRING);
 
