@@ -294,10 +294,10 @@ void gnss_probe(int duration_seconds)
  * typical full set; sized with headroom). */
 static void agnss_fetch_and_process(void)
 {
-	/* 2 KB is enough with CONFIG_NRF_CLOUD_AGNSS_FILTERED (only visible-
-	 * satellite ephemerides are downloaded); keeps RAM in budget next to
-	 * the Wi-Fi heap. */
-	static char agnss_buf[2048];
+	/* 2 KB was too small even with filtered ephemerides ("data cannot fit
+	 * in result buffer", -105). 4 KB is the standard A-GNSS response size;
+	 * fits in RAM now that the provisioning lib is out of this build. */
+	static char agnss_buf[4096];
 	struct nrf_cloud_rest_agnss_request request = {
 		.type = NRF_CLOUD_REST_AGNSS_REQ_CUSTOM,
 		.agnss_req = &agnss_req,
