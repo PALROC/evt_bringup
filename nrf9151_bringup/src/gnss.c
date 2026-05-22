@@ -401,6 +401,7 @@ void gnss_probe_assisted(int duration_seconds)
 	uint16_t best_cn0_seen = 0;
 	int max_tracked = 0;
 	int64_t fix_at_ms = 0;
+	bool lte_released = false;
 
 	for (int t = 1; t <= duration_seconds; t++) {
 		k_sleep(K_SECONDS(1));
@@ -409,6 +410,20 @@ void gnss_probe_assisted(int duration_seconds)
 		 * from the event handler — the CoAP fetch is blocking). */
 		if (atomic_cas(&agnss_req_pending, 1, 0)) {
 			agnss_fetch_and_process();
+
+			/* Assistance is now in the modem, so we don't need the
+			 * network anymore. With LTE active the modem time-shares
+			 * the radio and starves GNSS (tracked stays ~0); drop the
+			 * cloud link and deactivate LTE so GNSS gets the radio to
+			 * itself. The injected assistance means a fix should land
+			 * quickly even on a weak signal. */
+			if (!lte_released) {
+				(void)nrf_cloud_coap_disconnect();
+				(void)lte_lc_func_mode_set(
+					LTE_LC_FUNC_MODE_DEACTIVATE_LTE);
+				LOG_INF("LTE deactivated — GNSS now has the radio");
+				lte_released = true;
+			}
 		}
 
 		int tracked, used_in_fix;
