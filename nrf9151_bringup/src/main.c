@@ -144,11 +144,57 @@ static void wait_for_hall2_press(void)
 	LOG_INF("Hall 2 pressed — starting demo");
 }
 
-/* Smoke-test callback for the inter-MCU link. Commit 3 will replace
- * this with the actual demo state machine (BLE start request etc). */
+/* Inter-MCU link callback. Watches for BLE_READY / BLE_FAIL replies
+ * from the L15 in response to our BLE_START request and unblocks the
+ * demo flow via ble_ready_sem. Runs on the system workqueue (NOT in
+ * ISR context), so it's safe to do work-y things in here. */
+static K_SEM_DEFINE(ble_ready_sem, 0, 1);
+static char ble_peer_name[UART_CHAT_LINE_MAX];
+static int  ble_peer_status; /* 0 = OK, -1 = FAIL */
+
 static void on_uart_line(const char *line)
 {
 	LOG_INF("[uart] <- L15: \"%s\"", line);
+
+	if (strncmp(line, "BLE_READY ", 10) == 0) {
+		strncpy(ble_peer_name, line + 10, sizeof(ble_peer_name) - 1);
+		ble_peer_name[sizeof(ble_peer_name) - 1] = '\0';
+		ble_peer_status = 0;
+		k_sem_give(&ble_ready_sem);
+	} else if (strncmp(line, "BLE_FAIL", 8) == 0) {
+		strncpy(ble_peer_name, line, sizeof(ble_peer_name) - 1);
+		ble_peer_name[sizeof(ble_peer_name) - 1] = '\0';
+		ble_peer_status = -1;
+		k_sem_give(&ble_ready_sem);
+	}
+}
+
+/* Phase 5 of the demo: tell the L15 to start BLE, wait for its ACK
+ * containing the advertised name. Times out after 10 s (covers
+ * bt_enable's worst case + workqueue scheduling). */
+static void trigger_l15_ble(void)
+{
+	LOG_INF("--- Triggering L15 BLE advertising ---");
+	k_sem_reset(&ble_ready_sem);
+	ble_peer_status = -1;
+	ble_peer_name[0] = '\0';
+
+	uart_chat_send("BLE_START");
+
+	int err = k_sem_take(&ble_ready_sem, K_SECONDS(10));
+	if (err) {
+		LOG_ERR("BLE_READY timeout — no reply from L15");
+		test_report("ble_trigger", TEST_FAIL, "timeout");
+		return;
+	}
+	if (ble_peer_status != 0) {
+		LOG_ERR("L15 reported BLE failure: %s", ble_peer_name);
+		test_report("ble_trigger", TEST_FAIL, "L15 said: %s",
+			    ble_peer_name);
+		return;
+	}
+	LOG_INF("L15 is advertising as \"%s\"", ble_peer_name);
+	test_report("ble_trigger", TEST_PASS, "L15: %s", ble_peer_name);
 }
 
 int main(void)
@@ -188,14 +234,15 @@ int main(void)
 	 * timeline reads as: silent boot -> Hall press -> handshake. */
 	(void)uart_chat_init(on_uart_line);
 
+	/* Demo loop: every Hall 2 press kicks off the whole sequence —
+	 * modem -> LTE -> i2c/spi probes -> IMU -> Wi-Fi scan -> nRF7000
+	 * powered down -> tell the L15 to start BLE -> log the advertised
+	 * name. Modem and Wi-Fi will report errors on the second iteration
+	 * (already initialised) — that's expected, the demo is mainly
+	 * useful on the first press; the IMU/UART/BLE bits stay
+	 * idempotent across re-runs. */
+	while (1) {
 	wait_for_hall2_press();
-
-	/* Link smoke test, deliberately gated by Hall 2 so it shows up in
-	 * the demo log right after the trigger. Commit 3 replaces this with
-	 * the real BLE-start handshake. */
-	if (uart_chat_ready()) {
-		uart_chat_send("HELLO_9151");
-	}
 
 	LOG_INF("--- Modem (init + AT only) ---");
 	modem_probe();
@@ -277,7 +324,21 @@ int main(void)
 	LOG_INF("--- nRF7000 passive Wi-Fi scan ---");
 	wifi_passive_scan(WIFI_PROBE_TIMEOUT_S);
 	k_msleep(INTER_PHASE_MS);
+
+	/* Phase 4: power the Wi-Fi chip fully down. Drives BUCK_EN +
+	 * IOVDD_CTL low so the TCK106AG load switches open — visible on
+	 * the PPK2 as a ~200 mA drop. The BLE handoff happens against a
+	 * clean current baseline. */
+	LOG_INF("--- nRF7000 power-down ---");
+	wifi_emergency_off();
+	test_report("wifi_off", TEST_PASS,
+		    "BUCK_EN + IOVDD_CTL low — chip unpowered");
+	k_msleep(INTER_PHASE_MS);
 #endif
+
+	/* Phase 5: hand off to the L15 for BLE. */
+	trigger_l15_ble();
+	k_msleep(INTER_PHASE_MS);
 
 	LOG_INF("--- LEDs walk ---");
 	leds_walk();
@@ -300,7 +361,12 @@ int main(void)
 	test_report("wifi", TEST_SKIP, "RUN_WIFI_PROBE=0");
 #endif
 
-	LOG_INF("bring-up complete");
+	LOG_INF("--- demo iteration complete; press Hall 2 again to re-run ---");
 	test_report_summary(BOARD_NUMBER, FW_VERSION_STRING);
+
+	/* Debounce: small idle so a slow magnet release doesn't immediately
+	 * re-trigger the next wait_for_hall2_press(). */
+	k_msleep(2000);
+	}
 	return 0;
 }

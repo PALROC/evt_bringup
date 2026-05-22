@@ -4,11 +4,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+#include <stdio.h>
 #include <string.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/device.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/hwinfo.h>
 #include <zephyr/bluetooth/bluetooth.h>
 
 #include "test_report.h"
@@ -16,12 +18,92 @@
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
-/* Smoke-test callback for the inter-MCU link. Commit 3 will replace
- * this with the BLE-start request handler. */
+/* BLE name = "palroc-l15-<6 hex digits from chip ID>". Built once at
+ * boot from the L15 SoC's factory-programmed unique device ID, so it's
+ * stable across reboots and unique per board. Used as the advertising
+ * NAME_COMPLETE field AND echoed back to the 9151 in the BLE_READY
+ * reply so the demo log shows the exact name the phone scanner will
+ * see. */
+#define BLE_NAME_PREFIX "palroc-l15-"
+static char ble_name[sizeof(BLE_NAME_PREFIX) + 6];
+static bool ble_started;
+
+static void compute_ble_name(void)
+{
+	uint8_t id[16];
+	ssize_t n = hwinfo_get_device_id(id, sizeof(id));
+
+	if (n < 3) {
+		/* Fallback: deterministic-looking placeholder so the demo
+		 * still has a complete name to advertise. */
+		snprintf(ble_name, sizeof(ble_name), BLE_NAME_PREFIX "000000");
+		LOG_WRN("hwinfo unavailable (n=%d) — using fallback BLE name",
+			(int)n);
+		return;
+	}
+	snprintf(ble_name, sizeof(ble_name), BLE_NAME_PREFIX "%02x%02x%02x",
+		 id[n - 3], id[n - 2], id[n - 1]);
+}
+
+/* Start BLE advertising with the chip-ID-derived name, then reply to
+ * the 9151 with BLE_READY <name>. Idempotent: if BLE is already up
+ * from a previous BLE_START (the user pressed Hall 2 again), we just
+ * re-send the ack so the 9151 sees a consistent response. */
+static void start_ble_advertising(void)
+{
+	char reply[UART_CHAT_LINE_MAX];
+
+	if (ble_started) {
+		LOG_INF("BLE already advertising; re-sending BLE_READY");
+		snprintf(reply, sizeof(reply), "BLE_READY %s", ble_name);
+		uart_chat_send(reply);
+		return;
+	}
+
+	int err = bt_enable(NULL);
+	if (err) {
+		LOG_ERR("bt_enable failed: %d", err);
+		test_report("ble_init", TEST_FAIL, "bt_enable err %d", err);
+		uart_chat_send("BLE_FAIL bt_enable");
+		return;
+	}
+	LOG_INF("BT stack initialised");
+	test_report("ble_init", TEST_PASS, "bt_enable OK");
+
+	const struct bt_data ad[] = {
+		BT_DATA_BYTES(BT_DATA_FLAGS,
+			      (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
+		BT_DATA(BT_DATA_NAME_COMPLETE, ble_name, strlen(ble_name)),
+	};
+
+	err = bt_le_adv_start(BT_LE_ADV_NCONN, ad, ARRAY_SIZE(ad), NULL, 0);
+	if (err) {
+		LOG_ERR("bt_le_adv_start failed: %d", err);
+		test_report("ble_advertise", TEST_FAIL,
+			    "bt_le_adv_start err %d", err);
+		uart_chat_send("BLE_FAIL adv_start");
+		return;
+	}
+
+	LOG_INF("Advertising as \"%s\" (non-connectable)", ble_name);
+	test_report("ble_advertise", TEST_PASS, "name=\"%s\"", ble_name);
+	ble_started = true;
+
+	snprintf(reply, sizeof(reply), "BLE_READY %s", ble_name);
+	uart_chat_send(reply);
+}
+
+/* RX callback. Runs on the system workqueue (not in ISR context), so
+ * synchronous bt_enable / advertising start is fine here. */
 static void on_uart_line(const char *line)
 {
 	LOG_INF("[uart] <- 9151: \"%s\"", line);
-	if (strcmp(line, "HELLO_9151") == 0) {
+
+	if (strcmp(line, "BLE_START") == 0) {
+		start_ble_advertising();
+	} else if (strcmp(line, "HELLO_9151") == 0) {
+		/* Link smoke test from commit 2 still answered — handy for
+		 * debugging the link in isolation without triggering BLE. */
 		uart_chat_send("HELLO_L15");
 	}
 }
@@ -79,12 +161,6 @@ static int l15_early_gpio_init(void)
 }
 SYS_INIT(l15_early_gpio_init, POST_KERNEL, 50);
 
-static const struct bt_data ad[] = {
-	BT_DATA_BYTES(BT_DATA_FLAGS, (BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR)),
-	BT_DATA(BT_DATA_NAME_COMPLETE, CONFIG_BT_DEVICE_NAME,
-		sizeof(CONFIG_BT_DEVICE_NAME) - 1),
-};
-
 /* Verify the SYS_INIT-parked i²c pins really did go high-Z and aren't
  * being held by anything else (a bus partner pulling, a stray short, etc.).
  * Reads the pin level back; with a 9151-side pull-up at idle the line
@@ -114,65 +190,40 @@ static void test_gpio_park(void)
 
 int main(void)
 {
-	int err;
-
 	LOG_INF("nRF54L15 palroc bring-up start  BOARD=%d  fw=%s  built=%s %s",
 		BOARD_NUMBER, FW_VERSION_STRING, __DATE__, __TIME__);
 
 	/* If we got here, the kernel finished init — the LFXO/K32SRC fix
 	 * (CONFIG_CLOCK_CONTROL_NRF_K32SRC_RC=y) survived another reboot.
-	 * That's the chief "alive" signal for the L15 on this board.
-	 */
+	 * That's the chief "alive" signal for the L15 on this board. */
 	test_report("boot", TEST_PASS, "kernel init OK, K32SRC_RC fix held");
 
 	test_gpio_park();
 
-	/* Bring up the inter-MCU link early so a HELLO_9151 from the peer
-	 * can ACK back before BLE init. Commit 3 turns this into a real
-	 * BLE-start handshake (the 9151 will request, this side replies
-	 * with the actual BT name including the chip-ID suffix). */
+	compute_ble_name();
+	LOG_INF("BLE name reserved (will advertise on BLE_START): %s",
+		ble_name);
+	test_report("ble_name", TEST_PASS, "%s", ble_name);
+
+	/* Bring up the inter-MCU link. BLE itself is NOT started here —
+	 * the 9151 triggers it by sending "BLE_START" over the link once
+	 * it has finished the cellular + Wi-Fi probes and powered the
+	 * nRF7000 down. on_uart_line() handles the actual bt_enable +
+	 * advertising start, then sends "BLE_READY <name>" back. */
 	if (uart_chat_init(on_uart_line) == 0) {
-		test_report("uart_link", TEST_PASS, "dut-uart up, RX callback armed");
+		test_report("uart_link", TEST_PASS,
+			    "dut-uart up, waiting for BLE_START");
 	} else {
 		test_report("uart_link", TEST_FAIL, "dut-uart not ready");
 	}
 
-	/* Wi-Fi scan runs on the 9151 on EVT1 — not here. */
-
-	err = bt_enable(NULL);
-	if (err) {
-		LOG_ERR("bt_enable failed: %d", err);
-		test_report("ble_init", TEST_FAIL, "bt_enable err %d", err);
-		test_report("ble_advertise", TEST_SKIP, "bt_enable failed");
-		test_report_summary(BOARD_NUMBER, FW_VERSION_STRING);
-		return err;
-	}
-	LOG_INF("BT stack initialised");
-	test_report("ble_init", TEST_PASS, "bt_enable OK");
-
-	err = bt_le_adv_start(BT_LE_ADV_NCONN, ad, ARRAY_SIZE(ad), NULL, 0);
-	if (err) {
-		LOG_ERR("bt_le_adv_start failed: %d", err);
-		test_report("ble_advertise", TEST_FAIL,
-			    "bt_le_adv_start err %d", err);
-		test_report_summary(BOARD_NUMBER, FW_VERSION_STRING);
-		return err;
-	}
-	LOG_INF("Advertising as \"%s\" (non-connectable)", CONFIG_BT_DEVICE_NAME);
-	test_report("ble_advertise", TEST_PASS,
-		    "non-connectable, name=\"%s\"", CONFIG_BT_DEVICE_NAME);
-
-	/* Print the test summary first so it's at the top of the RTT log
-	 * and easy to copy out, before the long-running advertising loop
-	 * fills the log with heartbeats.
-	 */
 	test_report_summary(BOARD_NUMBER, FW_VERSION_STRING);
 
 	int n = 0;
-
 	while (1) {
 		k_sleep(K_SECONDS(10));
-		LOG_INF("alive t=%ds (still advertising)", ++n * 10);
+		LOG_INF("alive t=%ds (BLE %s)", ++n * 10,
+			ble_started ? "advertising" : "waiting for BLE_START");
 	}
 	return 0;
 }
