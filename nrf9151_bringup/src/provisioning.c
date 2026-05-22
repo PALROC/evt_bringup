@@ -13,8 +13,10 @@
 #include <modem/lte_lc.h>
 #include <modem/modem_key_mgmt.h>
 #include <nrf_modem_at.h>
-#include <net/nrf_provisioning.h>
 #include <date_time.h>
+#if defined(CONFIG_NRF_PROVISIONING)
+#include <net/nrf_provisioning.h>
+#endif
 
 #include "provisioning.h"
 #include "test_report.h"
@@ -24,15 +26,6 @@ LOG_MODULE_REGISTER(provisioning, LOG_LEVEL_INF);
 /* nRF Cloud device-credential sec_tag (default; matches the auto-
  * onboarding rule's KEYGEN/CMNG target). */
 #define NRF_CLOUD_SEC_TAG 16842753
-
-/* The provisioning runs in two passes (KEYGEN+CSR submit, then the
- * service-signed client cert), so allow several trigger attempts with a
- * pause between them for the service to process the CSR. */
-#define PROV_MAX_PASSES   4
-#define PROV_PASS_GAP_S   15
-#define PROV_DONE_TIMEOUT_S 90
-
-static K_SEM_DEFINE(prov_done_sem, 0, 1);
 
 /* True once the device client cert is present at the nRF Cloud sec_tag. */
 static bool client_cert_present(void)
@@ -47,6 +40,17 @@ static bool client_cert_present(void)
 	}
 	return exists;
 }
+
+#if defined(CONFIG_NRF_PROVISIONING)
+
+/* The provisioning runs in two passes (KEYGEN+CSR submit, then the
+ * service-signed client cert), so allow several trigger attempts with a
+ * pause between them for the service to process the CSR. */
+#define PROV_MAX_PASSES   4
+#define PROV_PASS_GAP_S   15
+#define PROV_DONE_TIMEOUT_S 90
+
+static K_SEM_DEFINE(prov_done_sem, 0, 1);
 
 /* The provisioning lib calls this to move the modem between online (to
  * talk to the service) and offline (to write credentials to NVM). Mirror
@@ -196,3 +200,25 @@ bool provisioning_run(void)
 		    PROV_MAX_PASSES);
 	return false;
 }
+
+#else /* !CONFIG_NRF_PROVISIONING */
+
+/* Demo build: the heavy provisioning lib is excluded (RAM). Just report
+ * whether the device already carries its nRF Cloud client cert. To
+ * provision a new board, build once with overlay-provision.conf. */
+bool provisioning_run(void)
+{
+	if (client_cert_present()) {
+		LOG_INF("device provisioned (client cert at sec_tag %d)",
+			NRF_CLOUD_SEC_TAG);
+		test_report("provisioning", TEST_PASS, "already provisioned");
+		return true;
+	}
+
+	LOG_WRN("device NOT provisioned — build with overlay-provision.conf "
+		"and run once to install nRF Cloud credentials");
+	test_report("provisioning", TEST_FAIL, "not provisioned (use overlay)");
+	return false;
+}
+
+#endif /* CONFIG_NRF_PROVISIONING */

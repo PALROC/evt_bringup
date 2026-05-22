@@ -294,7 +294,10 @@ void gnss_probe(int duration_seconds)
  * typical full set; sized with headroom). */
 static void agnss_fetch_and_process(void)
 {
-	static char agnss_buf[4096];
+	/* 2 KB is enough with CONFIG_NRF_CLOUD_AGNSS_FILTERED (only visible-
+	 * satellite ephemerides are downloaded); keeps RAM in budget next to
+	 * the Wi-Fi heap. */
+	static char agnss_buf[2048];
 	struct nrf_cloud_rest_agnss_request request = {
 		.type = NRF_CLOUD_REST_AGNSS_REQ_CUSTOM,
 		.agnss_req = &agnss_req,
