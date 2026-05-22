@@ -195,8 +195,16 @@ int main(void)
 	spi_flash_jedec();
 	k_msleep(INTER_PHASE_MS);
 
-	LOG_INF("--- SPI3 IMU @ CS=P0.16 ---");
+	/* LSM6DSO IMU. EVT2 moved it off SPI3 onto i2c2 — pick the probe by
+	 * whether the board DT has an `lsm6dso` node (present on EVT2, absent
+	 * on EVT1 where the IMU is a raw-SPI device with no DT child). */
+#if DT_NODE_HAS_STATUS(DT_NODELABEL(lsm6dso), okay)
+	LOG_INF("--- I2C2 IMU @ 0x6a (EVT2) ---");
+	i2c_imu_whoami();
+#else
+	LOG_INF("--- SPI3 IMU @ CS=P0.16 (EVT1) ---");
 	spi_imu_whoami();
+#endif
 	k_msleep(INTER_PHASE_MS);
 
 #if RUN_BUTTON_PROBE
