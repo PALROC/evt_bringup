@@ -27,6 +27,15 @@ static const struct device *const i2c = DEVICE_DT_GET(DT_NODELABEL(i2c2));
 #define LSM6DSO_REG_OUTX_L_A 0x28
 #define LSM6DSO_ACCEL_LSB_MS2  (0.061e-3 * 9.80665)
 
+/* Average over a burst of samples to smooth out per-sample noise (a
+ * single reading drifts a few % off 9.81; the mean is much tighter).
+ * At 104 Hz ODR the sample period is ~9.6 ms, so 100 samples ≈ 1 s.
+ * The last ACCEL_PRINT_LAST raw readings are logged so you can see the
+ * live data, not just the mean. */
+#define ACCEL_SAMPLE_COUNT     100
+#define ACCEL_PRINT_LAST       10
+#define ACCEL_SAMPLE_PERIOD_MS 10
+
 bool i2c_probe_ready(void)
 {
 	if (!device_is_ready(i2c)) {
@@ -122,40 +131,75 @@ void i2c_imu_accel_read(void)
 	}
 	k_msleep(25);
 
-	/* Read OUTX_L_A..OUTZ_H_A (6 bytes, signed 16-bit little-endian). */
-	ret = i2c_burst_read(i2c, LSM6DSO_I2C_ADDR,
-			     LSM6DSO_REG_OUTX_L_A, buf, sizeof(buf));
-	if (ret) {
-		LOG_ERR("accel burst read failed: %d", ret);
-		test_report("i2c_imu_accel", TEST_FAIL, "burst err %d", ret);
-		return;
+	/* Accumulate raw counts over ACCEL_SAMPLE_COUNT samples. int32 sum
+	 * can't overflow: 100 * 32767 ≈ 3.3M << INT32_MAX. Keep the last
+	 * ACCEL_PRINT_LAST raw triples for the live readout. */
+	int32_t sum_x = 0, sum_y = 0, sum_z = 0;
+	int16_t last_x[ACCEL_PRINT_LAST];
+	int16_t last_y[ACCEL_PRINT_LAST];
+	int16_t last_z[ACCEL_PRINT_LAST];
+
+	for (int i = 0; i < ACCEL_SAMPLE_COUNT; i++) {
+		ret = i2c_burst_read(i2c, LSM6DSO_I2C_ADDR,
+				     LSM6DSO_REG_OUTX_L_A, buf, sizeof(buf));
+		if (ret) {
+			LOG_ERR("accel burst read failed at sample %d: %d",
+				i, ret);
+			test_report("i2c_imu_accel", TEST_FAIL,
+				    "burst err %d at sample %d", ret, i);
+			return;
+		}
+
+		int16_t rx = (int16_t)((buf[1] << 8) | buf[0]);
+		int16_t ry = (int16_t)((buf[3] << 8) | buf[2]);
+		int16_t rz = (int16_t)((buf[5] << 8) | buf[4]);
+
+		sum_x += rx;
+		sum_y += ry;
+		sum_z += rz;
+
+		int slot = i - (ACCEL_SAMPLE_COUNT - ACCEL_PRINT_LAST);
+		if (slot >= 0) {
+			last_x[slot] = rx;
+			last_y[slot] = ry;
+			last_z[slot] = rz;
+		}
+
+		k_msleep(ACCEL_SAMPLE_PERIOD_MS);
 	}
 
-	int16_t rx = (int16_t)((buf[1] << 8) | buf[0]);
-	int16_t ry = (int16_t)((buf[3] << 8) | buf[2]);
-	int16_t rz = (int16_t)((buf[5] << 8) | buf[4]);
+	/* Single-precision throughout — plenty for 16-bit counts scaled by
+	 * a mg/LSB constant, and avoids soft-float double routines. */
+	const float k = (float)LSM6DSO_ACCEL_LSB_MS2;
 
-	/* Single-precision is plenty for a 16-bit raw count scaled by a
-	 * mg/LSB constant; avoids pulling in soft-float double routines. */
-	float ax = rx * (float)LSM6DSO_ACCEL_LSB_MS2;
-	float ay = ry * (float)LSM6DSO_ACCEL_LSB_MS2;
-	float az = rz * (float)LSM6DSO_ACCEL_LSB_MS2;
+	LOG_INF("accel: last %d of %d samples (m/s2):",
+		ACCEL_PRINT_LAST, ACCEL_SAMPLE_COUNT);
+	for (int i = 0; i < ACCEL_PRINT_LAST; i++) {
+		float x = last_x[i] * k;
+		float y = last_y[i] * k;
+		float z = last_z[i] * k;
+		LOG_INF("  [%2d] X=%6.2f Y=%6.2f Z=%6.2f  |g|=%5.2f",
+			i + 1, (double)x, (double)y, (double)z,
+			(double)sqrtf(x * x + y * y + z * z));
+	}
 
-	/* Magnitude should be ~9.81 m/s² at rest — the board orientation
-	 * just shifts which axis carries the gravity vector. */
+	float ax = (sum_x / (float)ACCEL_SAMPLE_COUNT) * k;
+	float ay = (sum_y / (float)ACCEL_SAMPLE_COUNT) * k;
+	float az = (sum_z / (float)ACCEL_SAMPLE_COUNT) * k;
 	float mag = sqrtf(ax * ax + ay * ay + az * az);
 
-	LOG_INF("accel raw: X=%6d Y=%6d Z=%6d", rx, ry, rz);
-	LOG_INF("accel m/s2: X=%6.2f Y=%6.2f Z=%6.2f  |g|=%5.2f",
-		(double)ax, (double)ay, (double)az, (double)mag);
+	LOG_INF("accel avg over %d: X=%6.2f Y=%6.2f Z=%6.2f  |g|=%5.2f m/s2",
+		ACCEL_SAMPLE_COUNT, (double)ax, (double)ay, (double)az,
+		(double)mag);
 
-	/* Sanity: at rest the magnitude should be within ~1 m/s² of 9.81. */
+	/* Sanity: at rest the averaged magnitude should sit close to 9.81. */
 	if (mag > 8.5f && mag < 11.0f) {
 		test_report("i2c_imu_accel", TEST_PASS,
-			    "X=%.2f Y=%.2f Z=%.2f |g|=%.2f m/s2",
-			    (double)ax, (double)ay, (double)az, (double)mag);
+			    "avg|g|=%.2f m/s2 (X=%.2f Y=%.2f Z=%.2f, n=%d)",
+			    (double)mag, (double)ax, (double)ay, (double)az,
+			    ACCEL_SAMPLE_COUNT);
 	} else {
 		test_report("i2c_imu_accel", TEST_FAIL,
-			    "|g|=%.2f m/s2 out of [8.5,11.0]", (double)mag);
+			    "avg|g|=%.2f m/s2 out of [8.5,11.0]", (double)mag);
 	}
 }
