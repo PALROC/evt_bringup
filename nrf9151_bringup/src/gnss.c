@@ -2,6 +2,7 @@
 #include <zephyr/logging/log.h>
 #include <nrf_modem_at.h>
 #include <nrf_modem_gnss.h>
+#include <modem/lte_lc.h>
 
 #include "gnss.h"
 #include "test_report.h"
@@ -116,6 +117,22 @@ void gnss_probe(int duration_seconds)
 	int err;
 
 	LOG_INF("--- GNSS probe (%d s) ---", duration_seconds);
+
+	/* GNSS needs GPS active in the system mode. The dual-RAT LTE test
+	 * (modem_lte_attach_both) leaves the modem in NB-IoT with no GPS, so
+	 * on a demo loop iteration CFUN=31 would fail with CME 65536 ("no
+	 * GNSS subsystem to wake"). Force a GPS-capable mode here. It can
+	 * only be changed while non-active, so drop to CFUN=0 first; the
+	 * later LTE test re-sets the mode to what it needs.
+	 */
+	nrf_modem_at_printf("AT+CFUN=0");
+	err = lte_lc_system_mode_set(LTE_LC_SYSTEM_MODE_GPS,
+				     LTE_LC_SYSTEM_MODE_PREFER_AUTO);
+	if (err) {
+		LOG_ERR("system_mode_set(GPS) failed: %d", err);
+		test_report("gnss", TEST_FAIL, "GPS mode set err %d", err);
+		return;
+	}
 
 	/* COEX0 → external GNSS LNA enable. The palroc board uses COEX0 to
 	 * gate the LNA powered from nPM1300 LDO1; the modem drives this

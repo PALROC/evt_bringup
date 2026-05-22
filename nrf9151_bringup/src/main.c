@@ -37,14 +37,15 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
  */
 #define RUN_BAND_SWEEP 0
 
-/* Set to 1 to run the GNSS probe (COEX0 LNA gate + CFUN=31 + continuous
- * tracking + per-5s satellite/CN0/fix log) right after modem_probe() and
- * BEFORE the LTE attach/sweep, with the modem returned to CFUN=0 at the
- * end so the LTE phase starts clean. Default 0 because indoor first fix
- * can take minutes; turn on when validating the antenna/LNA path or with
- * line-of-sight to the sky.
+/* GNSS probe toggle. 1 = include GNSS in the Hall-2 run (COEX0 LNA gate
+ * + GPS system mode + CFUN=31 + continuous tracking + per-5s
+ * satellite/CN0/fix log), right after modem_probe() and BEFORE the LTE
+ * attach, modem returned to CFUN=0 at the end so the LTE phase starts
+ * clean. 0 = skip it for the quick demo (GNSS needs outdoor sky view
+ * and a cold first fix can take minutes). Flip to 1 + reflash when
+ * validating the antenna/LNA path outdoors.
  */
-#define RUN_GNSS_PROBE       0
+#define RUN_GNSS_PROBE       1
 #define GNSS_PROBE_DURATION  300
 
 /* SPI3 bus contention test: the nRF54L15 shares SPI3 lines (SCK/MOSI/MISO)
