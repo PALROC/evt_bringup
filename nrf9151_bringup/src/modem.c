@@ -347,21 +347,27 @@ void modem_lte_attach(void)
 	}
 }
 
-#define RAT_ATTACH_TIMEOUT_S 90
+/* Per-RAT attach timeouts. LTE-M attaches in ~4 s when available, so a
+ * short timeout fails fast if it isn't. NB-IoT can take ~80 s here
+ * (roaming operator selection cycles through several cells before it
+ * registers), so it needs a much longer window + margin. */
+#define LTEM_ATTACH_TIMEOUT_S   45
+#define NBIOT_ATTACH_TIMEOUT_S  120
 
 /* Attach on a single RAT (LTE-M or NB-IoT) with a timeout. `lock_band`
  * pins the attach to one band (e.g. NB-IoT is only offered on B20 by
  * this operator, and scanning all bands never reaches it inside the
- * timeout); pass 0 to allow all bands. Reads RSRP on success and files
- * a PASS/FAIL test_report under `report_key`. Leaves the modem at
- * CFUN=0 on exit so the next RAT (or the rest of the demo) starts clean.
+ * timeout); pass 0 to allow all bands. `timeout_s` bounds the attach
+ * wait. Reads RSRP on success and files a PASS/FAIL test_report under
+ * `report_key`. Leaves the modem at CFUN=0 on exit so the next RAT (or
+ * the rest of the demo) starts clean.
  *
  * System mode + band lock can only be changed while the modem is
  * non-active, so we drop to CFUN=0 first; lte_lc_connect_async() then
  * brings it to CFUN=1.
  */
 static void attach_one_rat(enum lte_lc_system_mode mode, const char *label,
-			   const char *report_key, int lock_band)
+			   const char *report_key, int lock_band, int timeout_s)
 {
 	char resp[160];
 	int err;
@@ -386,11 +392,11 @@ static void attach_one_rat(enum lte_lc_system_mode mode, const char *label,
 		err = nrf_modem_at_cmd(resp, sizeof(resp),
 				       "AT%%XBANDLOCK=2,\"%s\"", bandstr);
 		LOG_INF("--- %s attach (B%d only, %d s timeout) ---", label,
-			lock_band, RAT_ATTACH_TIMEOUT_S);
+			lock_band, timeout_s);
 	} else {
 		err = nrf_modem_at_cmd(resp, sizeof(resp), "AT%%XBANDLOCK=0");
 		LOG_INF("--- %s attach (all bands, %d s timeout) ---", label,
-			RAT_ATTACH_TIMEOUT_S);
+			timeout_s);
 	}
 	if (err) {
 		LOG_WRN("%s: XBANDLOCK set returned %d (continuing)", label, err);
@@ -407,7 +413,7 @@ static void attach_one_rat(enum lte_lc_system_mode mode, const char *label,
 		return;
 	}
 
-	err = k_sem_take(&lte_connected_sem, K_SECONDS(RAT_ATTACH_TIMEOUT_S));
+	err = k_sem_take(&lte_connected_sem, K_SECONDS(timeout_s));
 	int64_t took_s = (k_uptime_get() - t0) / 1000;
 
 	if (err) {
@@ -449,7 +455,8 @@ void modem_lte_attach_both(void)
 {
 	lte_lc_register_handler(lte_event_handler);
 
-	attach_one_rat(LTE_LC_SYSTEM_MODE_LTEM,  "LTE-M",  "lte_m_attach", 0);
+	attach_one_rat(LTE_LC_SYSTEM_MODE_LTEM,  "LTE-M",  "lte_m_attach",
+		       0, LTEM_ATTACH_TIMEOUT_S);
 	attach_one_rat(LTE_LC_SYSTEM_MODE_NBIOT, "NB-IoT", "nbiot_attach",
-		       NBIOT_LOCK_BAND);
+		       NBIOT_LOCK_BAND, NBIOT_ATTACH_TIMEOUT_S);
 }

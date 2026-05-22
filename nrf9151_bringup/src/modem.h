@@ -11,12 +11,12 @@ void modem_probe(void);
  */
 void modem_lte_attach(void);
 
-/* Test BOTH radio access technologies in turn (90 s timeout each):
- * LTE-M across all bands, then NB-IoT locked to band 20 (this operator
- * only offers NB-IoT there, and an all-band scan never reaches it in
- * time). Logs attach time + RSRP and files a separate PASS/FAIL
- * test_report for each ("lte_m_attach", "nbiot_attach"). Leaves the
- * modem at CFUN=0 when done. */
+/* Test BOTH radio access technologies in turn: LTE-M across all bands
+ * (45 s timeout — it attaches in seconds when available), then NB-IoT
+ * locked to band 20 (120 s timeout — this operator only offers NB-IoT
+ * there and roaming selection can take ~80 s). Logs attach time + RSRP
+ * and files a separate PASS/FAIL test_report for each ("lte_m_attach",
+ * "nbiot_attach"). Leaves the modem at CFUN=0 when done. */
 void modem_lte_attach_both(void);
 
 /* Put the modem in flight mode (AT+CFUN=4): digital side fully active,
