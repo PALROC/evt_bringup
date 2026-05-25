@@ -23,6 +23,21 @@ void modem_probe(void)
 		return;
 	}
 
+	/* Configure COEX0 -> external GNSS LNA enable HERE, immediately after
+	 * lib init and BEFORE any other modem activity. The %XCOEX0 datasheet
+	 * is explicit: "must be sent before any modem activity occurs",
+	 * otherwise the config doesn't take effect and COEX0 never asserts
+	 * (measured 0 V at the LNA enable when this was done late, inside
+	 * gnss_probe). count=1, state=1, 1565-1586 MHz = GPS L1; the modem
+	 * then drives COEX0 high automatically during GNSS RX. */
+	LOG_INF("configuring COEX0 for GNSS LNA (early, pre-activity)...");
+	err = nrf_modem_at_cmd(resp, sizeof(resp), "AT%%XCOEX0=1,1,1565,1586");
+	if (err) {
+		LOG_ERR("AT%%XCOEX0 failed: %d (raw: %s)", err, resp);
+	} else if (nrf_modem_at_cmd(resp, sizeof(resp), "AT%%XCOEX0?") == 0) {
+		LOG_INF("  COEX0 readback: %s", resp);
+	}
+
 	LOG_INF("sending plain AT...");
 	err = nrf_modem_at_printf("AT");
 	LOG_INF("AT returned %d", err);

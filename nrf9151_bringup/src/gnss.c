@@ -153,43 +153,11 @@ void gnss_probe(int duration_seconds)
 		return;
 	}
 
-	/* COEX0 → external GNSS LNA enable. The palroc board uses COEX0 to
-	 * gate the LNA powered from nPM1300 LDO1; the modem drives this
-	 * line high during GNSS RX so the LNA is only powered when needed.
-	 *
-	 * AT%XCOEX0=<mode>,<gnss_pin>,<f_low_MHz>,<f_high_MHz>
-	 *   mode=1: enable COEX0
-	 *   gnss_pin=1: drive high during GNSS RX
-	 *   1565..1586 MHz: GPS L1 / GLONASS L1 band
-	 */
-	/* gnss_pin: 1 = COEX0 driven HIGH during GNSS RX (active-high LNA
-	 * enable, the most common topology). Flip to 0 if your LNA enable is
-	 * active-LOW or the schematic inverts COEX0 between modem and LNA —
-	 * symptom of a polarity mismatch is zero SVs tracked outdoors with
-	 * clear sky AND the AT%XCOEX0? readback confirming the params we
-	 * wrote: in that case the AT side is doing exactly what we asked,
-	 * but "what we asked" is the opposite of what the LNA needs.
-	 */
-	err = nrf_modem_at_cmd(resp, sizeof(resp),
-			       "AT%%XCOEX0=1,1,1565,1586");
-	if (err) {
-		LOG_ERR("AT%%XCOEX0 failed: %d (raw: %s)", err, resp);
-		/* Continue anyway — without COEX0 the LNA stays off and
-		 * tracking will be much weaker, but GNSS still functions. */
-	} else {
-		LOG_INF("COEX0 → GNSS L1 LNA enabled (1565-1586 MHz)");
-	}
-
-	/* Read back what the modem actually has set. If the params don't
-	 * match what we wrote, the modem firmware uses a different syntax
-	 * for AT%XCOEX0 in this version (some mfw revs want extra WCDMA
-	 * params), and we need to adjust the set command above.
-	 */
-	if (nrf_modem_at_cmd(resp, sizeof(resp), "AT%%XCOEX0?") == 0) {
-		LOG_INF("  COEX0 readback: %s", resp);
-	} else {
-		LOG_WRN("  AT%%XCOEX0? readback failed (mfw may not support query)");
-	}
+	/* COEX0 -> GNSS LNA enable is configured EARLY in modem_probe(),
+	 * right after nrf_modem_lib_init() — the %XCOEX0 datasheet requires
+	 * it be set before any modem activity, otherwise it never takes
+	 * effect (COEX0 stays 0 V). Do NOT re-issue it here; it's too late
+	 * at this point and was the bug that left the LNA disabled. */
 
 	/* CFUN=31 = GNSS only, LTE off. Cleanest GNSS test: no LTE TX
 	 * competing for the antenna front-end, no risk of TX-vs-RX brownout
@@ -371,11 +339,9 @@ void gnss_probe_assisted(int duration_seconds)
 	}
 	LOG_INF("nRF Cloud connected");
 
-	/* COEX0 -> external GNSS LNA enable (same as the offline path). */
-	if (nrf_modem_at_cmd(resp, sizeof(resp),
-			     "AT%%XCOEX0=1,1,1565,1586") == 0) {
-		LOG_INF("COEX0 -> GNSS L1 LNA enabled");
-	}
+	/* COEX0 -> GNSS LNA enable is configured early in modem_probe()
+	 * (must be before any modem activity per the %XCOEX0 datasheet);
+	 * not re-issued here. */
 
 	err = nrf_modem_gnss_event_handler_set(gnss_event_handler);
 	if (err) {
