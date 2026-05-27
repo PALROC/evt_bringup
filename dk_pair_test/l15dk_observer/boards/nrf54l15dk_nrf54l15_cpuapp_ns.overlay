@@ -1,0 +1,46 @@
+/*
+ * Route the L15 DK's spi00 to the same pins the EVT2 board uses for
+ * its 9151 <-> L15 shared bus. CS = P1.10 — a free L15 GPIO that the
+ * user wires by jumper to the 9151 DK's P0.20 (= GD25 /CS), so both
+ * MCUs can independently assert the GD25's chip select.
+ *
+ *   SCK  = P2.1   (jumper to 9151 DK D13)
+ *   MOSI = P2.2   (jumper to 9151 DK D11)
+ *   MISO = P2.4   (jumper to 9151 DK D12)
+ *   CS   = P1.10  (jumper to 9151 DK P0.20 = GD25 /CS)
+ *
+ * This recreates EVT2's "two masters, one chip, shared /CS" topology.
+ * With both MCUs running, contention has been confirmed to wedge the
+ * 9151's SPIM3 indefinitely (see DevZone post). Erasing the 9151
+ * lets the L15 read the GD25 cleanly on its own.
+ */
+
+&pinctrl {
+	spi00_pair_default: spi00_pair_default {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK,  2, 1)>,
+				<NRF_PSEL(SPIM_MOSI, 2, 2)>;
+		};
+		group2 {
+			psels = <NRF_PSEL(SPIM_MISO, 2, 4)>;
+		};
+	};
+
+	spi00_pair_sleep: spi00_pair_sleep {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK,  2, 1)>,
+				<NRF_PSEL(SPIM_MOSI, 2, 2)>,
+				<NRF_PSEL(SPIM_MISO, 2, 4)>;
+			low-power-enable;
+		};
+	};
+};
+
+&spi00 {
+	status = "okay";
+	compatible = "nordic,nrf-spim";
+	pinctrl-0 = <&spi00_pair_default>;
+	pinctrl-1 = <&spi00_pair_sleep>;
+	pinctrl-names = "default", "sleep";
+	cs-gpios = <&gpio1 10 GPIO_ACTIVE_LOW>;
+};

@@ -1,0 +1,69 @@
+/*
+ * Strip the EVT2 9151 board config down to ONLY what's needed to talk
+ * to the flash. Disable every other peripheral the board file enables,
+ * so this test app's runtime touches the absolute minimum of EVT2 HW.
+ *
+ * Why: we want to know whether EVT2's flash failure is a hardware
+ * problem with our board (in which case bare-minimum config still
+ * fails) or a firmware-side issue from how our full bring-up config
+ * interacts with the SPI3 peripheral (in which case stripping
+ * everything else fixes it).
+ *
+ * Keep: spi3 (flash), gpio0 (CS via cs-gpios)
+ * Disable: uart0 (sw-lpuart), i2c2 (PMIC), spi1 (nRF7000), pwm,
+ *          everything else
+ *
+ * NOTE: this overlay only disables peripherals at the DT level. The
+ * full effect depends on the corresponding Kconfig — most peripherals
+ * also need CONFIG_<SUBSYSTEM>=y to be compiled in. prj.conf already
+ * leaves SERIAL/I2C/BT/etc. unset, so most of these never link in
+ * anyway. We disable them in DT too as a belt-and-braces guarantee
+ * that no driver auto-initialises them at boot.
+ */
+
+/* Inter-MCU link — disable so it never claims uart0 or REQ/RDY pins. */
+&uart0 {
+	status = "disabled";
+};
+&lpuart {
+	status = "disabled";
+};
+
+/* PMIC + i2c2 — we don't talk to the nPM1300 in this test. */
+&i2c2 {
+	status = "disabled";
+};
+
+/* nRF7000 Wi-Fi on spi1 — completely off. */
+&spi1 {
+	status = "disabled";
+};
+&nrf70 {
+	status = "disabled";
+};
+
+/* Keep spi3 enabled with its existing pinctrl + cs-gpios — that's the
+ * one peripheral we DO want. (Already enabled in the board's
+ * common.dtsi; we just need to add the flash device node since the
+ * board file declares the bus but no children.) */
+&spi3 {
+	status = "okay";
+	flash: w25q128jv@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <1000000>;
+		jedec-id = [ef 40 18];
+		size = <134217728>; /* 128 Mbit = 16 MB */
+		has-dpd;
+		t-enter-dpd = <3000>;
+		t-exit-dpd = <40000>;
+		status = "okay";
+	};
+};
+
+/* Disable all PWM instances (board file doesn't enable them, but if
+ * any default Zephyr behaviour kicks them, this kills it). */
+&pwm0 { status = "disabled"; };
+&pwm1 { status = "disabled"; };
+&pwm2 { status = "disabled"; };
+&pwm3 { status = "disabled"; };

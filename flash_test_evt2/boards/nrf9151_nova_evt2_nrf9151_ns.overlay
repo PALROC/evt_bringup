@@ -1,0 +1,66 @@
+/*
+ * Overlay: route the flash to SPI1 instead of SPI3.
+ *
+ * Purpose: diagnostic test of whether SPIM1 can drive the same flash
+ * chip that SPIM3 cannot. If yes, this confirms the fault is localized
+ * to just the SPIM3 instance on this 9151 — every other SPIM on the
+ * die works fine.
+ *
+ * Changes vs the board default:
+ *   - &spi3 status = "disabled" (releases its pinctrl claim on
+ *     P0.13/14/15)
+ *   - nRF7000 child on &spi1 status = "disabled" (so the Wi-Fi
+ *     driver doesn't claim spi1)
+ *   - &spi1 pinctrl rewritten to use the flash's pins
+ *     (SCK=P0.13, MOSI=P0.15, MISO=P0.14)
+ *   - &spi1 cs-gpios = the flash's CS pin (P0.12)
+ *
+ * Result: the test app's spi1 device drives the same physical W25Q128JV
+ * flash chip via the same PCB traces, just through SPIM1 silicon
+ * instead of SPIM3 silicon. No board rework required.
+ *
+ * IMPORTANT: This overlay assumes the Wi-Fi (nRF7000) is OFF for this
+ * test. Don't fly this in the full bring-up firmware — it'll break Wi-Fi.
+ */
+
+/* Release the broken SPIM3 instance (frees its pins). */
+&spi3 {
+	status = "disabled";
+};
+
+/* Replace spi1's pinctrl with the flash's pin map. */
+&pinctrl {
+	spi1_flash_default: spi1_flash_default {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK,  0, 13)>,
+				<NRF_PSEL(SPIM_MOSI, 0, 15)>,
+				<NRF_PSEL(SPIM_MISO, 0, 14)>;
+		};
+	};
+
+	spi1_flash_sleep: spi1_flash_sleep {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK,  0, 13)>,
+				<NRF_PSEL(SPIM_MOSI, 0, 15)>,
+				<NRF_PSEL(SPIM_MISO, 0, 14)>;
+			low-power-enable;
+		};
+	};
+};
+
+/* nRF7000 child OFF (don't let Wi-Fi driver fight us for spi1).
+ * Note: nrf70 label is the child of &spi1 in the board's common.dtsi.
+ */
+&nrf70 {
+	status = "disabled";
+};
+
+/* SPI1 now driving the flash, on flash pins. */
+&spi1 {
+	status = "okay";
+	compatible = "nordic,nrf-spim";
+	pinctrl-0 = <&spi1_flash_default>;
+	pinctrl-1 = <&spi1_flash_sleep>;
+	pinctrl-names = "default", "sleep";
+	cs-gpios = <&gpio0 12 GPIO_ACTIVE_LOW>;
+};

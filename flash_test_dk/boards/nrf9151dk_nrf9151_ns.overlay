@@ -1,0 +1,19 @@
+/*
+ * Empty on purpose.
+ *
+ * The nRF9151 DK board file already declares everything we need:
+ *
+ *   &spi3 status=okay
+ *      pinctrl: SCK=P0.13  MISO=P0.12  MOSI=P0.11
+ *      cs-gpios:
+ *        [0] = arduino_header D10 -> P0.10  (free, used for the wired chip)
+ *        [1] = P0.20                          (onboard GD25WB256EYIG)
+ *
+ * Our previous overlay overrode `cs-gpios` with just the D10 entry,
+ * which dropped the onboard P0.20 CS line — the SPI driver then never
+ * configured P0.20 as an output, the onboard flash stayed permanently
+ * deselected, and ONBOARD read 00 00 00. Removing the override fixes it.
+ *
+ * If you need to override pins later, use `cs-gpios = <...>, <...>;`
+ * with BOTH entries, not just one.
+ */
