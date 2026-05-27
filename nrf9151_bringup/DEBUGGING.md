@@ -437,3 +437,96 @@ The 9151-side SPI3 read still produces shifted/zero/garbage bytes from the
 - `evt_bringup/flash_test_dk/`        — DK-side JEDEC probe (validates chip on a known-good board)
 - `evt_bringup/flash_test_evt1/`      — EVT1-side JEDEC probe via 9151
 - `evt_bringup/flash_test_l15_evt2/`  — **THE WINNING APP**: EVT2-side JEDEC probe via L15
+
+---
+
+## RESOLVED 2026-05-26 late night: the bug is in the Zephyr SPI driver, NOT the silicon
+
+**Headline:** SPIM3 on EVT2's 9151 works perfectly when driven by raw
+register writes through Nordic's `nrf_spim_*` HAL. The exact same
+peripheral, same chip, same pins, same 1 MHz clock, returns `00 00 00`
+when the Zephyr `spi_transceive()` API drives it. So the bug is in the
+Zephyr SPI driver glue (`spi_nrfx_spim.c` or `nrfx_spim`), not in the
+silicon or the hardware.
+
+### The decisive evidence
+
+`evt_bringup/flash_test_evt2_raw_spim/` boot sequence on EVT2:
+
+```
+1) bit-bang baseline (proves chip alive)         -> ef 40 18  PASS
+2) raw SPIM3 via HAL (configures registers, fires START):
+   pre-transfer registers:   ENABLE=7, PSEL.SCK/MOSI/MISO connected,
+                             FREQUENCY=0x10000000 (1M), CONFIG=0,
+                             TXD/RXD ptrs valid, AMOUNT=0
+   wait for EVENTS_END...    fires after 14 polls / 0 ms
+   post-transfer registers:  TXD.AMOUNT=4, RXD.AMOUNT=4,
+                             EVENTS_END=1, EVENTS_STARTED=1,
+                             EVENTS_ENDTX=1, EVENTS_ENDRX=1
+   rx_buf raw:               00 ef 40 18
+   ==>  RAW SPIM3 JEDEC = ef 40 18  PASS — chip alive via raw SPIM3
+3) raw SPIM3 READ-DATA at addr 0x000000 (looking for the L15's PALR):
+   READ raw bytes:
+     cmd/addr echo:  00 00 00 00
+     data (8 bytes): 50 41 4c 52  07 00 00 00
+   ==>  *** PALR FOUND via raw SPIM3 *** counter=7
+```
+
+So the full read-side data path is proven working at the silicon /
+DMA / pin / bus level. The L15 wrote, the 9151 reads it back via raw
+HAL.
+
+### Production fix path (the actual answer for EVT2)
+
+`evt_bringup/nrf9151_bringup/src/spi_probe.c` currently uses
+`spi_transceive()`. **Replace it with the raw HAL pattern** from
+`flash_test_evt2_raw_spim/src/main.c`. The key bits:
+
+```c
+#include <hal/nrf_spim.h>
+
+static uint8_t tx_buf[N] __aligned(4);
+static uint8_t rx_buf[N] __aligned(4);
+
+/* one-time at init */
+NRF_SPIM_Type *spim = NRF_SPIM3;
+spim->ENABLE = 0;
+spim->PSEL.SCK  = 13; spim->PSEL.MOSI = 15; spim->PSEL.MISO = 14;
+/* nRF91 SPIM has NO PSEL.CSN — drive CS via gpio_pin_set */
+spim->FREQUENCY = NRF_SPIM_FREQ_1M;
+spim->CONFIG    = 0;  /* mode 0, MSB-first */
+spim->ENABLE    = 7;
+
+/* per transfer */
+spim->TXD.PTR = (uint32_t)tx_buf;
+spim->TXD.MAXCNT = len;
+spim->RXD.PTR = (uint32_t)rx_buf;
+spim->RXD.MAXCNT = len;
+spim->EVENTS_END = 0;
+gpio_pin_set(gpio0, CS_PIN, 0);
+spim->TASKS_START = 1;
+while (spim->EVENTS_END == 0) { /* < 100 us; bound with a uptime check */ }
+gpio_pin_set(gpio0, CS_PIN, 1);
+```
+
+That's the unblocker — no Nordic engineering needed, no hardware
+rework, just don't go through `spi_transceive()` for SPIM3 on this
+specific path.
+
+### What's still open
+
+- The exact bug inside `spi_nrfx_spim.c` or `nrfx_spim` — likely in
+  the buffer-copy-to-RAM path, CS-via-cs-gpios timing, or some other
+  NCS 3.0.2-specific glue. Worth a precise DevZone bug report. We
+  have a minimal reproducer (flash_test_evt2_minimal fails) paired
+  with a minimal workaround (flash_test_evt2_raw_spim works) — two
+  apps differing only in the software layer.
+- Whether this affects current NCS too is unknown; we're locked to
+  3.0.2 for now.
+
+### Commits
+
+- `4841a1d` — DK pair reproducer + all initial test apps
+- `b6054ab` — flash_test_evt2_raw_spim + the silicon-works finding
+- `6d02ec6` — raw SPIM3 PALR read (arbitrary-address proof)
+
