@@ -83,6 +83,30 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 #define HOLD_L15_IN_RESET 0
 #define L15_NRESET_PIN    19
 
+/* MPPT / energy-balance test mode. When set to 1, the bring-up skips the
+ * entire normal demo and instead parks the board in its lowest readily-
+ * achievable idle state so you can measure whether the solar MPPT
+ * charges the battery faster than the system discharges it.
+ *
+ * What MPPT mode does (and doesn't do):
+ *  + L15 held in reset (its GPIOs go high-Z, no draw)
+ *  + nRF7000 BUCK_EN + IOVDD_CTL driven LOW (load switches OPEN — saves
+ *    100+ mA vs the chip running, the big lever)
+ *  + Modem never initialised (saves the ~3 mA modem idle current)
+ *  + No SPI3 / I2C bus traffic except one nPM1300 sample per minute
+ *  + 9151 spins in k_msleep so the kernel can enter its idle state
+ *    between samples
+ *  - NOT full Zephyr System OFF — that needs RTC wake-up plumbing and
+ *    is out of scope for the "under 10 mA, quick test" target.
+ *
+ * Expected idle current: a few mA on the 9151 + a handful µA from the
+ * idled PMIC + sub-mA from off peripherals = comfortably under 10 mA.
+ * Measure on the battery line with a multimeter / PPK2; the VBAT trend
+ * printed each minute also tells you net energy balance over time.
+ */
+#define RUN_MPPT_MODE          1
+#define MPPT_SAMPLE_PERIOD_MS  60000
+
 /* Set to 1 to run a single passive Wi-Fi scan via the nRF7000 on SPI1.
  * Logs every AP found (SSID / BSSID / channel / RSSI / security). The
  * driver handles BUCKEN + IOVDD-CTL + firmware patch upload internally;
@@ -124,6 +148,36 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
  * pull-up (safe whether the sensor is open-drain or push-pull). */
 #define HALL2_PIN              1
 #define HALL2_POLL_INTERVAL_MS 50
+
+/* Park the board in MPPT idle: L15 in reset, nRF7000 powered down, no
+ * modem, sample the PMIC once per MPPT_SAMPLE_PERIOD_MS. Never returns.
+ * Called from main() under RUN_MPPT_MODE.
+ */
+static void mppt_mode_run(void)
+{
+	LOG_INF("=== MPPT MODE ===");
+	LOG_INF("L15 held in reset, nRF7000 powered down, modem off.");
+	LOG_INF("Sampling nPM1300 every %d s. Watch VBAT trend for energy balance.",
+		MPPT_SAMPLE_PERIOD_MS / 1000);
+
+	const struct device *gpio0 = DEVICE_DT_GET(DT_NODELABEL(gpio0));
+	if (device_is_ready(gpio0)) {
+		gpio_pin_configure(gpio0, L15_NRESET_PIN, GPIO_OUTPUT_LOW);
+		LOG_INF("L15 nRESET = LOW (P0.%d)", L15_NRESET_PIN);
+	}
+
+	wifi_emergency_off();
+	LOG_INF("nRF7000 BUCK_EN + IOVDD_CTL = LOW (chip unpowered)");
+
+	uint32_t sample = 0;
+	while (1) {
+		sample++;
+		LOG_INF("--- MPPT sample %u  (t=%llds) ---",
+			sample, k_uptime_get() / 1000);
+		npm1300_probe();
+		k_msleep(MPPT_SAMPLE_PERIOD_MS);
+	}
+}
 
 static void wait_for_hall2_press(void)
 {
@@ -207,6 +261,12 @@ int main(void)
 	LOG_INF("nRF9151 bring-up start  BOARD=%d  fw=%s  built=%s %s",
 		BOARD_NUMBER, FW_VERSION_STRING, __DATE__, __TIME__);
 	diag_print_reset_reason();
+
+#if RUN_MPPT_MODE
+	/* MPPT mode owns the board — skip the whole demo and just park idle
+	 * while the PMIC reports the battery trend. Never returns. */
+	mppt_mode_run();
+#endif
 
 #if HOLD_L15_IN_RESET
 	{

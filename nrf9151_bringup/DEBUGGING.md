@@ -278,3 +278,162 @@ latched into a bad state.
 Full flash rework: /CS pull-up + /WP pull-up/bridge + /HOLD pull-up/
 bridge, all to 3V3. /HOLD is the most likely to unblock the read; /CS +
 /WP are correctness/robustness. Add all three to the next board spin.
+
+---
+
+## RESOLVED 2026-05-25: it was the antenna, not the board
+
+**Root cause: passive-antenna front-end + active antenna used for testing.**
+
+EVT2's GNSS section is copied from the Thingy:91 X — a passive-antenna
+topology: antenna -> on-board LNA (gated by COEX0, powered from LDO1)
+-> 9151 GNSS input. NO bias-T on the antenna feed.
+
+We had been testing with an active GPS antenna (the kind with built-in
+LNA in the antenna head needing DC bias up the coax). On EVT2 that bias
+is not provided -> the antenna's internal LNA stays unpowered -> the
+antenna head sits as a dead/absorbing element -> no signal reaches the
+on-board LNA -> 0 SVs.
+
+DK appeared to "work with the same antenna" only because the DK board
+biases its U.FL net (it supports active antennas by design). Same
+antenna, two different board behaviors -> the asymmetry was the
+antenna-type mismatch, NOT a bug on EVT2.
+
+**Firmware-side fixes that DID make the board correct (keep these):**
+- `%XCOEX0=1,1,1565,1586` must be sent BEFORE any modem activity
+  (NRF_MODEM_LIB_ON_INIT hook via `modem_antenna` lib). Setting it
+  late = COEX0 stays at 0 V = LNA never enables.
+- Auto-enable MODEM_ANTENNA on the nova board via Kconfig.defconfig
+  (`default y if NRF_MODEM_LIB`), matching the DK boards.
+
+**Hardware-side note for EVT3:**
+- For passive antennas only: current topology is correct, no changes.
+- For active-antenna flexibility on the same board: add a small bias-T
+  on the antenna feed (1 µH series from a 3 V rail to the antenna
+  trace + DC-block cap before LNA input).
+
+**Action: buy a passive GPS patch antenna with U.FL connector
+(~$3-5, "passive 1575 MHz patch antenna U.FL").** Plug into EVT2 ->
+expect CN0 30-45 outdoors + cold-start fix in 1-3 min.
+
+**Diagnostic that closed it:** COEX0 multimeter reading transitioned
+from 0 V / 0.8 V / 1.6 V (duty-cycled during acquisition) to a steady
+3.3 V (sustained tracking after lock) — confirming the LNA enable path
+works, and the issue is upstream of the on-board LNA = the antenna.
+
+---
+
+## MAJOR PIVOT 2026-05-26: the EVT2 flash chip is ALIVE — 9151-side problem, NOT chip damage
+
+**TL;DR — the entire "contention-damage killed the flash" theory is FALSIFIED.**
+The EVT2 flash is a genuine, healthy Winbond W25Q128JV and reports its
+JEDEC ID perfectly when read from the nRF54L15 side of the shared SPI3
+bus. Every garbage read we got from the 9151 side today (and historically)
+is a 9151-side issue, not chip damage.
+
+### The decisive experiment
+
+Built a sibling test app `evt_bringup/flash_test_l15_evt2/` that drives
+the L15's own spi00 master onto the *same* shared SPI3 nets and reads
+JEDEC at CS=P2.5. Pre-conditions: 9151 erased (so its GPIOs are high-Z
+inputs and don't drive the bus), TF-M peripherals released to NS.
+
+Result, after multiple iterations, polling every 5 s:
+
+```
+iter 3: JEDEC ef 40 18   PASS  Winbond W25Q128 (128 Mbit) - original EVT2 part
+iter 4: JEDEC ef 40 18   PASS  Winbond W25Q128 (128 Mbit) - original EVT2 part
+```
+
+Clean, repeatable, valid JEDEC. **The chip is fully functional.**
+
+### What was actually broken (and rules out what wasn't)
+
+| Component | Status now |
+|---|---|
+| EVT2 flash chip | ✅ Healthy. Genuine Winbond. |
+| L15 -> chip SPI3 path | ✅ Works perfectly. |
+| L15 SPIM00 peripheral | ✅ Works. |
+| TF-M release on /ns | ✅ Works with right configs (see below). |
+| Shared SPI3 bus architecture | ✅ Electrically sound. |
+| **9151 -> chip SPI3 read** | ❌ **Still broken. Different problem than we thought.** |
+
+### What this falsifies from earlier in this debug doc
+
+- **"L15 contention damages the flash chip" (steps.md 12.6.5 / sections above)**
+  — false. The chip is alive on a board where it was supposedly damaged.
+- **"EVT1 chip is damaged - EE 40 00 = output stage degraded"** — likely
+  also false. Probably the same 9151-side issue (or a clip-test artifact).
+  Need to confirm by running flash_test_l15 on EVT1 too.
+- **"Replace the flash chip" as the EVT3 hardware action** — not necessary.
+  The chips work. EVT3 just needs the 9151-side issue understood.
+
+### TF-M / SPIM00 gotchas that took the longest to figure out
+
+1. **SPIM00 minimum frequency = 1.016 MHz** (= 128 MHz / 126, the max
+   prescaler divisor). Setting `spi_config.frequency = 1000000` or
+   anything lower returns `NRFX_ERROR_INVALID_PARAM` (0x0bad0004) at
+   nrfx_spim_init. SPIM00 is the L15's FAST instance with a fixed
+   128 MHz core. Set freq to ~4 MHz to be safely in range.
+   - Source: nRF54L15 product spec spim.html + DevZone Q&A 126079.
+2. **TF-M owns SPIM00 + GPIO2 by default on /ns.** Release them to NS
+   with these in prj.conf (same pattern as the board's existing
+   `CONFIG_NRF_UARTE30_SECURE=n` for uart30):
+   ```
+   CONFIG_NRF_SPIM00_SECURE=n
+   CONFIG_NRF_GPIO2_SECURE=n
+   CONFIG_NRF_GPIO1_SECURE=n    # only if you use the 2nd cs-gpios entry
+   CONFIG_NRF_OSCILLATORS_SECURE=n   # safe to release even if unused
+   ```
+3. Without the TF-M release: first SPIM register access from NS bus-
+   faults with SECURE FAULT at addr 0x4 (plus the same nrfx error).
+4. With TF-M released but freq too low: no fault, but nrfx still returns
+   0x0bad0004. Two distinct failure modes that look superficially similar.
+
+### What we now actually need to investigate (next session)
+
+The 9151-side SPI3 read still produces shifted/zero/garbage bytes from the
+*same chip* the L15 reads cleanly. Hypotheses, cheap to expensive:
+
+1. **9151 MISO trace damage** (most likely) — the 9151's pin P0.14 or
+   its short trace to the shared bus may be electrically degraded.
+   Suggests: scope MISO at the 9151 pin AND at the chip DO pad
+   simultaneously while running the bring-up SPI read. If the chip's
+   signal is clean at its pad but garbled at the 9151's pin, MISO trace
+   is the suspect.
+2. **9151 SPI3 peripheral / pad damage** from some prior event (we
+   thought the 4.2 V event was confined to EVT1, but might have touched
+   EVT2 GPIOs too).
+3. **9151-side SPI3 driver timing margins** too tight on EVT2's layout
+   (less likely — same Zephyr driver, same SoC family, worked on DK).
+4. **The L15 reading the chip in isolation hides a contention issue
+   the 9151 hits when the L15 is also booted.** Test: erase the L15
+   too, then re-run the 9151's flash JEDEC. If still broken, 9151 side
+   is genuinely faulty independent of bus contention.
+
+### Action items
+
+- [ ] Run flash_test_l15_evt2 with the 9151 NOT erased — does the L15
+      still read cleanly while the 9151 is driving the bus? Tells us if
+      the L15 SPIM00 is robust to contention.
+- [ ] Confirm the EVT1 chip is also alive by running the same L15-side
+      probe on EVT1 (need to port flash_test_l15_evt2 to the EVT1 L15
+      board target). If it reads EF 40 18, the "chip damage" story is
+      fully dead and we have one unified 9151-side problem to chase.
+- [ ] Scope MISO at 9151 pin vs chip DO pad on EVT2 with the 9151 SPI
+      flash probe running. This is the diagnostic that probably names
+      the 9151-side failure mode.
+- [ ] Update the 9151-side bring-up `spi_probe.c` to accept the actual
+      W25Q128JV JEDEC `EF 40 18` (already correct) AND consider what to
+      do if the 9151-side never reads it (the chip works fine via L15).
+- [ ] EVT3 design: the underlying architecture (shared SPI3, two
+      masters) appears electrically OK after all. Still wise to add an
+      arbitration mechanism or bus switch, but it's no longer the
+      smoking gun we thought it was.
+
+### Files added today (keep these — they're decisive A/B test scaffolding)
+
+- `evt_bringup/flash_test_dk/`        — DK-side JEDEC probe (validates chip on a known-good board)
+- `evt_bringup/flash_test_evt1/`      — EVT1-side JEDEC probe via 9151
+- `evt_bringup/flash_test_l15_evt2/`  — **THE WINNING APP**: EVT2-side JEDEC probe via L15
