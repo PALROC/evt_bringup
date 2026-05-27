@@ -36,6 +36,9 @@
 #include <zephyr/device.h>
 #include <zephyr/drivers/spi.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/logging/log.h>
+
+LOG_MODULE_REGISTER(flash_test, LOG_LEVEL_INF);
 
 #define FLASH_CS_PIN  12
 #define SCK_PIN       13
@@ -61,34 +64,116 @@ static struct spi_config cfg = {
 
 #define CMD_JEDEC 0x9F
 
-/* Bit-bang one byte out on MOSI while sampling MISO. SPI mode 0,
- * MSB-first, ~125 kHz (k_busy_wait(2) per half-cycle). */
-static uint8_t bb_xchg(const struct device *gpio0, uint8_t out)
+/* Parametrised bit-bang. SPI mode 0, MSB-first.
+ *
+ * Approximate bit-rate per delay value:
+ *   delay_us = 4  ->  ~80 kHz   (period ~12 µs, very safe)
+ *   delay_us = 2  -> ~125 kHz   (period ~8 µs — our original)
+ *   delay_us = 1  -> ~250 kHz   (period ~4 µs)
+ *   delay_us = 0  -> ~500 kHz-1 MHz (raw gpio_pin_set rate, no explicit
+ *                                    delay; the call itself takes ~500ns)
+ *
+ * Real bit-rate depends on Zephyr's gpio_pin_set call overhead too.
+ * For the very fastest (0), we skip k_busy_wait entirely and let the
+ * three pin_set calls themselves time the cycle. */
+static uint8_t bb_xchg(const struct device *gpio0, uint8_t out, uint32_t delay_us)
 {
 	uint8_t in = 0;
 	for (int bit = 7; bit >= 0; bit--) {
 		gpio_pin_set(gpio0, MOSI_PIN, (out >> bit) & 1);
-		k_busy_wait(2);
+		if (delay_us) {
+			k_busy_wait(delay_us);
+		}
 		gpio_pin_set(gpio0, SCK_PIN, 1);
-		k_busy_wait(2);
+		if (delay_us) {
+			k_busy_wait(delay_us);
+		}
 		in |= (gpio_pin_get(gpio0, MISO_PIN) & 1) << bit;
 		gpio_pin_set(gpio0, SCK_PIN, 0);
-		k_busy_wait(2);
+		if (delay_us) {
+			k_busy_wait(delay_us);
+		}
 	}
 	return in;
 }
 
-/* Ground-truth bit-bang JEDEC read on the same four pins as plain
- * GPIOs. Run ONCE at boot, BEFORE the SPI driver init claims the
- * pins — this avoids the pin-hijack confound. Reports whether the
- * chip is alive and the traces are intact, independent of SPIM3. */
-static void bitbang_jedec_probe(void)
+/* Run one JEDEC read at a given delay and log the result. Cycle:
+ * CS low -> 4 byte exchanges -> CS high. No prints inside the bit
+ * loop itself (would mess with timing); only one LOG_INF at the end. */
+static void bitbang_one_speed(const struct device *gpio0, uint32_t delay_us,
+			      const char *label)
 {
-	printk(">>> --- BIT-BANG JEDEC probe (pre-SPI init) ---\n");
+	int64_t t_before = k_uptime_get();
+
+	gpio_pin_set(gpio0, FLASH_CS_PIN, 0);
+	k_busy_wait(5);
+
+	uint8_t rx[4];
+	rx[0] = bb_xchg(gpio0, CMD_JEDEC, delay_us);
+	rx[1] = bb_xchg(gpio0, 0x00,      delay_us);
+	rx[2] = bb_xchg(gpio0, 0x00,      delay_us);
+	rx[3] = bb_xchg(gpio0, 0x00,      delay_us);
+
+	gpio_pin_set(gpio0, FLASH_CS_PIN, 1);
+	k_busy_wait(5);
+
+	int64_t t_after = k_uptime_get();
+
+	bool ok = (rx[1] == 0xEF && rx[2] == 0x40);
+	const char *verdict =
+		ok ? "PASS" :
+		(rx[1] == 0 && rx[2] == 0 && rx[3] == 0)
+			? "FAIL (no response)" :
+			"(corrupt)";
+
+	LOG_INF("BB[%s d=%uus] JEDEC %02x %02x %02x  %s (byte0=%02x  took %lldms)",
+		label, delay_us, rx[1], rx[2], rx[3], verdict, rx[0],
+		t_after - t_before);
+}
+
+/* Sample MISO + SCK with internal pull-up enabled to make sure the bus
+ * is truly idle (no chip / wire still actively driving). With CS high,
+ * the chip's DO should be in high-Z, and our pull-up should win on
+ * both lines. Reads should be 1 / 1.
+ *
+ * If MISO reads 0 with a pull-up, something is actively pulling MISO
+ * low — could mean the chip is still in a transfer state, or the L15
+ * (if it's somehow present) is driving the line. */
+static void bus_idle_check(const struct device *gpio0, const char *when)
+{
+	/* Force pins to input + pull-up for the check. */
+	gpio_pin_configure(gpio0, MISO_PIN, GPIO_INPUT | GPIO_PULL_UP);
+	gpio_pin_configure(gpio0, SCK_PIN,  GPIO_INPUT | GPIO_PULL_UP);
+	k_msleep(2);
+
+	int miso = gpio_pin_get(gpio0, MISO_PIN);
+	int sck  = gpio_pin_get(gpio0, SCK_PIN);
+
+	LOG_INF("BUS CHECK %s: MISO=%d SCK=%d (both should be 1 with pull-up = idle)",
+		when, miso, sck);
+
+	/* Restore SCK as output low + MISO as input (no pull) ready for
+	 * the next bit-bang. */
+	gpio_pin_configure(gpio0, SCK_PIN,  GPIO_OUTPUT_LOW);
+	gpio_pin_configure(gpio0, MISO_PIN, GPIO_INPUT);
+}
+
+/* Bit-bang JEDEC sweep — FAST first, then progressively slower.
+ *
+ * Between every test we:
+ *   1. wait 2 seconds (so any chip-side state machine returns to idle)
+ *   2. sample MISO + SCK with pull-up to confirm the bus is at rest
+ *   3. then run the next bit-bang
+ *
+ * The structure exposes anything weird: if test N changes the bus's
+ * idle state visible in the post-test check, we'll see it. */
+static void bitbang_jedec_sweep(void)
+{
+	LOG_INF("--- BIT-BANG JEDEC sweep (fast first, with bus checks) ---");
 
 	const struct device *gpio0 = DEVICE_DT_GET(DT_NODELABEL(gpio0));
 	if (!device_is_ready(gpio0)) {
-		printk(">>> ERR: gpio0 not ready\n");
+		LOG_ERR("gpio0 not ready");
 		return;
 	}
 
@@ -96,68 +181,71 @@ static void bitbang_jedec_probe(void)
 	gpio_pin_configure(gpio0, SCK_PIN,      GPIO_OUTPUT_LOW);
 	gpio_pin_configure(gpio0, MOSI_PIN,     GPIO_OUTPUT_LOW);
 	gpio_pin_configure(gpio0, MISO_PIN,     GPIO_INPUT);
-	k_msleep(5);
+	k_msleep(50);
 
+	/* Wake the chip from any possible deep-power-down state at very
+	 * slow speed first. Harmless if it's already awake. */
 	gpio_pin_set(gpio0, FLASH_CS_PIN, 0);
 	k_busy_wait(5);
-	uint8_t rx[4];
-	rx[0] = bb_xchg(gpio0, CMD_JEDEC);
-	rx[1] = bb_xchg(gpio0, 0x00);
-	rx[2] = bb_xchg(gpio0, 0x00);
-	rx[3] = bb_xchg(gpio0, 0x00);
+	(void)bb_xchg(gpio0, 0xAB, 4);
 	gpio_pin_set(gpio0, FLASH_CS_PIN, 1);
-	k_busy_wait(5);
+	k_msleep(10);
 
-	bool ok = (rx[1] == 0xEF && rx[2] == 0x40);
-	printk(">>> [t=%lld ms] BITBANG JEDEC: %02x %02x %02x   %s (raw byte0=%02x)\n",
-	       k_uptime_get(), rx[1], rx[2], rx[3],
-	       ok ? "PASS — chip + traces alive" :
-	       (rx[1] == 0 && rx[2] == 0 && rx[3] == 0)
-		   ? "FAIL — even bit-bang gets nothing" :
-		   "(unexpected — SI / wiring marginal)",
-	       rx[0]);
+	bus_idle_check(gpio0, "at-start (pre-fast)");
+	k_msleep(2000);
 
-	/* Release the pins back to high-Z input so the SPI driver's
-	 * pinctrl can take them over cleanly when we call
-	 * spi_transceive() next. */
+	bitbang_one_speed(gpio0, 0, "fast");      /* no explicit delay */
+	k_msleep(2000);
+	bus_idle_check(gpio0, "after-fast");
+
+	k_msleep(2000);
+	bitbang_one_speed(gpio0, 1, "medium");    /* ~250 kHz target */
+	k_msleep(2000);
+	bus_idle_check(gpio0, "after-medium");
+
+	k_msleep(2000);
+	bitbang_one_speed(gpio0, 2, "slow");      /* ~125 kHz target */
+	k_msleep(2000);
+	bus_idle_check(gpio0, "after-slow");
+
+	k_msleep(2000);
+	bitbang_one_speed(gpio0, 4, "very-slow"); /* ~80 kHz target */
+	k_msleep(2000);
+	bus_idle_check(gpio0, "after-very-slow");
+
+	/* Release the pins back to high-Z input. */
 	gpio_pin_configure(gpio0, FLASH_CS_PIN, GPIO_DISCONNECTED);
 	gpio_pin_configure(gpio0, SCK_PIN,      GPIO_DISCONNECTED);
 	gpio_pin_configure(gpio0, MOSI_PIN,     GPIO_DISCONNECTED);
 	gpio_pin_configure(gpio0, MISO_PIN,     GPIO_DISCONNECTED);
-	k_msleep(20);
+	k_msleep(50);
 
-	printk(">>> --- end bit-bang probe; SPI3 driver now takes pins ---\n");
+	LOG_INF("--- end bit-bang sweep; SPI3 driver now takes pins ---");
 }
 
 int main(void)
 {
-	printk("\n");
-	printk(">>> BUILD-TAG: flash_test_evt2_minimal 2026-05-26\n");
-	printk(">>> EVT2 minimal flash test — only SPI3 active\n");
-	printk(">>> pins: SCK=P0.13  MOSI=P0.15  MISO=P0.14  CS=P0.%d\n",
-	       FLASH_CS_PIN);
+	LOG_INF("==========================================");
+	LOG_INF("BUILD-TAG: flash_test_evt2_minimal SWEEP-v2");
+	LOG_INF("EVT2 minimal flash test — only SPI3 active");
+	LOG_INF("pins: SCK=P0.13  MOSI=P0.15  MISO=P0.14  CS=P0.%d",
+		FLASH_CS_PIN);
+	LOG_INF("==========================================");
 
-	/* Bit-bang probe re-enabled — run it once at boot to prove the
-	 * chip + traces are alive, then wait an extra second so any pin /
-	 * peripheral state has time to settle before the SPI driver
-	 * claims the pins on its first transfer. */
-	bitbang_jedec_probe();
+	/* Bit-bang sweep at multiple speeds with bus-idle checks between
+	 * each, fast first. ~25 seconds total. */
+	bitbang_jedec_sweep();
 
-	printk(">>> [t=%lld ms] Settling 1000 ms before handing pins to SPI3 driver...\n",
-	       k_uptime_get());
-	k_msleep(1000);
-
-	printk(">>> [t=%lld ms] Polling SPI3 JEDEC. iter spacing: 10ms/100ms/1s/5s steady.\n",
-	       k_uptime_get());
+	LOG_INF("Settling 2 seconds before handing pins to SPI3 driver...");
+	k_msleep(2000);
 
 	if (!device_is_ready(spi)) {
-		printk(">>> ERR: spi3 not ready\n");
+		LOG_ERR("spi3 not ready");
 		return -ENODEV;
 	}
-	/* Generous settle: wait 500 ms AFTER confirming the driver is
-	 * ready and BEFORE the first transfer, to let any pin / pinctrl /
-	 * peripheral state finish settling. */
 	k_msleep(500);
+
+	LOG_INF("Polling SPI3 JEDEC every 5 s. Expected: ef 40 18 PASS.");
 
 	uint32_t iter = 0;
 	while (1) {
@@ -170,41 +258,26 @@ int main(void)
 		const struct spi_buf_set txs = { .buffers = &tx_buf, .count = 1 };
 		const struct spi_buf_set rxs = { .buffers = &rx_buf, .count = 1 };
 
-		/* Capture timestamps so we can see exactly when the wedge
-		 * happens — does iter 2 fail immediately (peripheral wedged
-		 * by iter 1) or only after the 5 s sleep (something happens
-		 * during idle)? */
 		int64_t t_before = k_uptime_get();
 		int ret = spi_transceive(spi, &cfg, &txs, &rxs);
 		int64_t t_after  = k_uptime_get();
 
 		if (ret) {
-			printk(">>> [t=%lld ms] iter %u: spi err %d (took %lld ms)\n",
-			       t_before, iter, ret, t_after - t_before);
+			LOG_ERR("iter %u: spi err %d (took %lld ms)",
+				iter, ret, t_after - t_before);
 		} else {
 			uint8_t mfg = rx[1], type = rx[2], cap = rx[3];
 			bool ok = (mfg == 0xEF && type == 0x40);
-			printk(">>> [t=%lld ms] iter %u: JEDEC %02x %02x %02x   %s (xfer=%lld ms)\n",
-			       t_before, iter, mfg, type, cap,
-			       ok ? "PASS" :
-			       (mfg == 0 && type == 0 && cap == 0)
-				   ? "FAIL (no clocks)" :
-				   "(unexpected)",
-			       t_after - t_before);
+			LOG_INF("iter %u: JEDEC %02x %02x %02x  %s  (xfer=%lld ms)",
+				iter, mfg, type, cap,
+				ok ? "PASS" :
+				(mfg == 0 && type == 0 && cap == 0)
+				    ? "FAIL" :
+				    "(?)",
+				t_after - t_before);
 		}
 
-		/* Vary the sleep: tight on iter 1->2 (10 ms) to test "wedge
-		 * is immediate", then more spaced to see the steady-state
-		 * pattern. */
-		if (iter == 1) {
-			k_msleep(10);    /* iter 2 hits in 10 ms */
-		} else if (iter == 2) {
-			k_msleep(100);   /* iter 3 in 100 ms */
-		} else if (iter == 3) {
-			k_msleep(1000);  /* iter 4 in 1 s */
-		} else {
-			k_msleep(5000);  /* steady state from iter 5 onwards */
-		}
+		k_msleep(5000);
 	}
 
 	return 0;
