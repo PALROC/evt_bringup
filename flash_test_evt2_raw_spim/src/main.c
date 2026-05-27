@@ -157,6 +157,100 @@ static void log_spim_state(const char *when)
 	k_msleep(20);
 }
 
+/* Generic raw-SPIM transfer: drive CS, fire START, wait END.
+ * Caller fills tx_buf and provides rx_buf; both must be 4-byte aligned
+ * in RAM. */
+static int raw_spim_transfer(const struct device *gpio0,
+			     uint8_t *tx, uint8_t *rx, size_t len)
+{
+	NRF_SPIM_Type *spim = NRF_SPIM3;
+
+	spim->TXD.PTR    = (uint32_t)tx;
+	spim->TXD.MAXCNT = len;
+	spim->RXD.PTR    = (uint32_t)rx;
+	spim->RXD.MAXCNT = len;
+
+	spim->EVENTS_END     = 0;
+	spim->EVENTS_STARTED = 0;
+	spim->EVENTS_ENDTX   = 0;
+	spim->EVENTS_ENDRX   = 0;
+
+	gpio_pin_set(gpio0, FLASH_CS_PIN, 0);
+	k_busy_wait(5);
+
+	int64_t t_start = k_uptime_get();
+	spim->TASKS_START = 1;
+	int polls = 0;
+	while (spim->EVENTS_END == 0) {
+		if (k_uptime_get() - t_start > 100) {
+			gpio_pin_set(gpio0, FLASH_CS_PIN, 1);
+			return -ETIMEDOUT;
+		}
+		polls++;
+	}
+
+	gpio_pin_set(gpio0, FLASH_CS_PIN, 1);
+	k_busy_wait(5);
+	return polls;
+}
+
+/* Read 8 bytes from flash address 0x000000 using the W25Q READ DATA
+ * command (0x03). The L15 wrote "PALR" + uint32_le counter here in
+ * the flash_test_l15_evt2 persistence test earlier today; if we can
+ * read it back via raw SPIM3 on EVT2, we've proven the silicon can
+ * do arbitrary-address reads, not just JEDEC. */
+static void raw_spim_read_palr(const struct device *gpio0)
+{
+	LOG_INF("===== RAW SPIM3 READ-DATA @ 0x000000 (looking for PALR) =====");
+
+	/* Buffer layout for READ DATA: 4 cmd+addr bytes out, then N data
+	 * bytes clocked out as 0x00 to read the chip's response. */
+	#define READ_LEN  12   /* 4 cmd/addr + 8 data */
+	static uint8_t r_tx[READ_LEN] __aligned(4);
+	static uint8_t r_rx[READ_LEN] __aligned(4);
+
+	memset(r_tx, 0, sizeof(r_tx));
+	memset(r_rx, 0xAA, sizeof(r_rx));   /* poison */
+	r_tx[0] = 0x03;   /* READ DATA command */
+	r_tx[1] = 0x00;   /* addr [23:16] */
+	r_tx[2] = 0x00;   /* addr [15:8]  */
+	r_tx[3] = 0x00;   /* addr [7:0]   */
+
+	int polls = raw_spim_transfer(gpio0, r_tx, r_rx, READ_LEN);
+	if (polls < 0) {
+		LOG_ERR("READ DATA timed out (ret=%d)", polls);
+		return;
+	}
+	LOG_INF("READ DATA EVENTS_END fired after %d polls", polls);
+
+	/* Bytes 0..3 of r_rx are the response while we were clocking out
+	 * the command + address — should be 0x00 (chip not driving DO
+	 * yet). Bytes 4..11 are the actual flash contents. */
+	LOG_INF("READ raw bytes:");
+	LOG_INF("  cmd/addr echo (rx 0..3): %02x %02x %02x %02x",
+		r_rx[0], r_rx[1], r_rx[2], r_rx[3]);
+	LOG_INF("  data (rx 4..11):         %02x %02x %02x %02x  %02x %02x %02x %02x",
+		r_rx[4], r_rx[5], r_rx[6], r_rx[7],
+		r_rx[8], r_rx[9], r_rx[10], r_rx[11]);
+
+	bool magic_ok = (r_rx[4] == 'P' && r_rx[5] == 'A' &&
+			 r_rx[6] == 'L' && r_rx[7] == 'R');
+	if (magic_ok) {
+		uint32_t counter = (uint32_t)r_rx[8]
+			| ((uint32_t)r_rx[9] << 8)
+			| ((uint32_t)r_rx[10] << 16)
+			| ((uint32_t)r_rx[11] << 24);
+		LOG_INF("*** PALR FOUND via raw SPIM3 *** counter=%u",
+			counter);
+		LOG_INF("    chip contents: 'P' 'A' 'L' 'R' + uint32_le %u", counter);
+		LOG_INF("    (written by the L15 earlier in flash_test_l15_evt2)");
+	} else if (r_rx[4] == 0xFF && r_rx[5] == 0xFF) {
+		LOG_INF("flash at 0x000000 is erased (all FF)");
+	} else {
+		LOG_WRN("no PALR magic — flash has different bytes than expected");
+	}
+}
+
 static void raw_spim_test(const struct device *gpio0)
 {
 	NRF_SPIM_Type *spim = NRF_SPIM3;
@@ -243,8 +337,9 @@ static void raw_spim_test(const struct device *gpio0)
 		    ? "FAIL — silent SPIM3 failure persists even raw" :
 		    "(unexpected pattern)");
 
-	/* Disable so a subsequent run / re-test starts clean. */
-	spim->ENABLE = 0;
+	/* Leave SPIM3 enabled and configured — raw_spim_read_palr() runs
+	 * right after and will reuse the same setup, just with different
+	 * TXD/RXD pointers + lengths. */
 }
 
 int main(void)
@@ -273,6 +368,14 @@ int main(void)
 	k_msleep(50);
 
 	raw_spim_test(gpio0);
+
+	/* JEDEC worked → try arbitrary-address read of the PALR marker the
+	 * L15 wrote earlier. Proves raw SPIM3 can do real flash reads, not
+	 * just JEDEC. The SPIM3 peripheral is still configured (ENABLE=7,
+	 * PSEL.* still set) from raw_spim_test() — we just send a new
+	 * transfer. */
+	k_msleep(500);
+	raw_spim_read_palr(gpio0);
 
 	LOG_INF("--- done; idling ---");
 	while (1) {
