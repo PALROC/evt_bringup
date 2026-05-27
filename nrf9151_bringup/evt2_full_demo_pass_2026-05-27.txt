@@ -1,0 +1,36 @@
+EVT2 BRD #1  (CHIP ID 1b62399045bf9c64)
+("board#4" in the firmware's BOARD_NUMBER field is the firmware-set
+counter, not the physical board number — this is physically EVT2 #1.)
+
+Full bring-up demo PASS on the post-SPIM3-HAL-refactor build.
+First time the whole demo runs end-to-end on EVT2 with the flash
+test passing.
+
+[00:00:45.840,972] <inf> test_report: =========================================================
+[00:00:45.841,003] <inf> test_report: === CHIP ID 1b62399045bf9c64 ===
+[00:00:45.841,033] <inf> test_report: === board#4  fw=0.15.0-step16-testreport  TEST SUMMARY ===
+[00:00:45.841,064] <inf> test_report: =========================================================
+[00:00:45.841,094] <inf> test_report:   [PASS] modem_init             fw=nrf91x1_2.0.4
+[00:00:45.841,156] <inf> test_report:   [INFO] attest_token           printed to RTT
+[00:00:45.841,217] <inf> test_report:   [PASS] provisioning           already provisioned
+[00:00:45.841,278] <inf> test_report:   [PASS] lte_m_attach           5s, RSRP -101 dBm
+[00:00:45.841,339] <inf> test_report:   [PASS] nbiot_attach           5s, RSRP -101 dBm
+[00:00:45.841,369] <inf> test_report:   [PASS] i2c2                   2 ACKs total, npm1300@0x6b=yes
+[00:00:45.841,430] <inf> test_report:   [PASS] npm1300                VBAT=3.789 V
+[00:00:45.841,491] <inf> test_report:   [PASS] spi3_flash             JEDEC ef 40 18
+[00:00:45.841,522] <inf> test_report:   [PASS] i2c_imu                WHO_AM_I=0x6c
+[00:00:45.841,583] <inf> test_report:   [PASS] i2c_imu_accel          avg|g|=10.02 m/s2 (X=0.04 Y=0.14 Z=10.02, n=100)
+[00:00:45.841,644] <inf> test_report:   [PASS] wifi                   12 APs, best RSSI -36 dBm
+[00:00:45.841,705] <inf> test_report:   [PASS] wifi_off               BUCK_EN + IOVDD_CTL low — chip unpowered
+[00:00:45.841,766] <inf> test_report:   [PASS] ble_trigger            L15: palroc-l15-68da74
+[00:00:45.841,796] <inf> test_report:   [SKIP] band_sweep             RUN_BAND_SWEEP=0
+[00:00:45.841,857] <inf> test_report:   [SKIP] gnss                   RUN_GNSS_PROBE=0
+[00:00:45.841,857] <inf> test_report: ---------------------------------------------------------
+[00:00:45.841,888] <inf> test_report: === CHIP 1b62399045bf9c64  totals: PASS=12  FAIL=0  INFO=1  SKIP=2 ===
+[00:00:45.841,918] <inf> test_report: =========================================================
+
+12 / 12 PASS, 0 FAIL.
+
+Notable line: `[PASS] spi3_flash    JEDEC ef 40 18` — read via the raw
+SPIM3 HAL bypass that replaced the broken Zephyr spi_transceive() path.
+See flash_spi_writeup_cody.md for the technical writeup.

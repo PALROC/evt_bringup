@@ -46,7 +46,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
  * and a cold first fix can take minutes). Flip to 1 + reflash when
  * validating the antenna/LNA path outdoors.
  */
-#define RUN_GNSS_PROBE       1
+#define RUN_GNSS_PROBE       0
 #define GNSS_PROBE_DURATION  300
 
 /* GNSS assistance mode. 1 = assisted (A-GNSS): fetch assistance from
@@ -104,7 +104,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
  * Measure on the battery line with a multimeter / PPK2; the VBAT trend
  * printed each minute also tells you net energy balance over time.
  */
-#define RUN_MPPT_MODE          1
+#define RUN_MPPT_MODE          0
 #define MPPT_SAMPLE_PERIOD_MS  60000
 
 /* Set to 1 to run a single passive Wi-Fi scan via the nRF7000 on SPI1.
