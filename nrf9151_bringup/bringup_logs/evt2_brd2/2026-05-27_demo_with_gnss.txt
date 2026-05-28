@@ -1,0 +1,47 @@
+EVT2 BRD #2  (CHIP ID b0844c400a825942)
+("board#4" in the firmware's BOARD_NUMBER field is the firmware-set
+counter, not the physical board number — this is physically EVT2 #2,
+the second EVT2 unit we've validated.)
+
+First-run PASS for this board on the demo with GNSS enabled. All 11
+functional tests green on the first boot, including BLE this time
+(L15 advertising as palroc-l15-576148, 9151→L15 handshake succeeded).
+
+Same firmware revision (0.15.0-step16-testreport) as brd1; same
+build, just programmed onto a different SoC. Bringup_logs naming
+convention: per-physical-board folder; chip ID is the durable
+identifier.
+
+[00:05:46.833,038] <inf> test_report: =========================================================
+[00:05:46.833,068] <inf> test_report: === CHIP ID b0844c400a825942 ===
+[00:05:46.833,099] <inf> test_report: === board#4  fw=0.15.0-step16-testreport  TEST SUMMARY ===
+[00:05:46.833,129] <inf> test_report: =========================================================
+[00:05:46.833,160] <inf> test_report:   [PASS] modem_init             fw=nrf91x1_2.0.4
+[00:05:46.833,221] <inf> test_report:   [INFO] attest_token           printed to RTT
+[00:05:46.833,282] <inf> test_report:   [INFO] gnss                   max_SV=12  best_cn0=42.7 dB-Hz  fix=YES
+[00:05:46.833,343] <inf> test_report:   [PASS] lte_m_attach           3s, RSRP -101 dBm
+[00:05:46.833,374] <inf> test_report:   [PASS] nbiot_attach           8s, RSRP -83 dBm
+[00:05:46.833,435] <inf> test_report:   [PASS] i2c2                   2 ACKs total, npm1300@0x6b=yes
+[00:05:46.833,496] <inf> test_report:   [PASS] npm1300                VBAT=3.759 V
+[00:05:46.833,526] <inf> test_report:   [PASS] spi3_flash             JEDEC ef 40 18
+[00:05:46.833,587] <inf> test_report:   [PASS] i2c_imu                WHO_AM_I=0x6c
+[00:05:46.833,648] <inf> test_report:   [PASS] i2c_imu_accel          avg|g|=10.02 m/s2 (X=0.42 Y=0.50 Z=10.00, n=100)
+[00:05:46.833,709] <inf> test_report:   [PASS] wifi                   29 APs, best RSSI -50 dBm
+[00:05:46.833,740] <inf> test_report:   [PASS] wifi_off               BUCK_EN + IOVDD_CTL low — chip unpowered
+[00:05:46.833,801] <inf> test_report:   [PASS] ble_trigger            L15: palroc-l15-576148
+[00:05:46.833,862] <inf> test_report:   [SKIP] band_sweep             RUN_BAND_SWEEP=0
+[00:05:46.833,862] <inf> test_report: ---------------------------------------------------------
+[00:05:46.833,892] <inf> test_report: === CHIP b0844c400a825942  totals: PASS=11  FAIL=0  INFO=2  SKIP=1 ===
+[00:05:46.833,923] <inf> test_report: =========================================================
+
+11 / 11 PASS, 0 FAIL.
+
+Notable: best_cn0=42.7 dB-Hz is solid "good" range (matches brd1's
+second run), 29 Wi-Fi APs visible at -50 dBm best RSSI, BLE handshake
+worked first try (vs brd1's second run which timed out — that BLE
+timeout was an inter-MCU UART race, not a radio issue; both boards
+broadcast successfully when L15 actually advertises).
+
+This is the second physical board to fully pass the bring-up. The
+raw-SPIM3-HAL workaround in spi_probe.c handles its flash correctly
+on the first attempt — no per-board tuning needed.
