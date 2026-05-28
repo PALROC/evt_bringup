@@ -1,0 +1,47 @@
+EVT2 BRD #1  (CHIP ID 1b62399045bf9c64)
+("board#4" in the firmware's BOARD_NUMBER field is the firmware-set
+counter, not the physical board number — this is physically EVT2 #1.)
+
+Full bring-up demo PASS *with GNSS enabled*, first run with the new
+PASSIVE GPS antenna. The active-antenna saga from 2026-05-25 is now
+fully closed: passive antenna + the early-COEX0 firmware fix gets us
+12 SVs, 35.9 dB-Hz peak, COLD-START FIX in ~5 minutes from boot.
+
+[00:05:45.382,354] <inf> test_report: =========================================================
+[00:05:45.382,385] <inf> test_report: === CHIP ID 1b62399045bf9c64 ===
+[00:05:45.382,415] <inf> test_report: === board#4  fw=0.15.0-step16-testreport  TEST SUMMARY ===
+[00:05:45.382,415] <inf> test_report: =========================================================
+[00:05:45.382,446] <inf> test_report:   [PASS] modem_init             fw=nrf91x1_2.0.4
+[00:05:45.382,507] <inf> test_report:   [INFO] attest_token           printed to RTT
+[00:05:45.382,568] <inf> test_report:   [PASS] provisioning           already provisioned
+[00:05:45.382,629] <inf> test_report:   [INFO] gnss                   max_SV=12  best_cn0=35.9 dB-Hz  fix=YES
+[00:05:45.382,659] <inf> test_report:   [PASS] lte_m_attach           3s, RSRP -90 dBm
+[00:05:45.382,720] <inf> test_report:   [PASS] nbiot_attach           5s, RSRP -81 dBm
+[00:05:45.382,751] <inf> test_report:   [PASS] i2c2                   2 ACKs total, npm1300@0x6b=yes
+[00:05:45.382,812] <inf> test_report:   [PASS] npm1300                VBAT=3.779 V
+[00:05:45.382,873] <inf> test_report:   [PASS] spi3_flash             JEDEC ef 40 18
+[00:05:45.382,904] <inf> test_report:   [PASS] i2c_imu                WHO_AM_I=0x6c
+[00:05:45.382,965] <inf> test_report:   [PASS] i2c_imu_accel          avg|g|=10.08 m/s2 (X=0.23 Y=0.71 Z=10.05, n=100)
+[00:05:45.383,026] <inf> test_report:   [PASS] wifi                   28 APs, best RSSI -55 dBm
+[00:05:45.383,056] <inf> test_report:   [PASS] wifi_off               BUCK_EN + IOVDD_CTL low — chip unpowered
+[00:05:45.383,117] <inf> test_report:   [PASS] ble_trigger            L15: palroc-l15-68da74
+[00:05:45.383,178] <inf> test_report:   [SKIP] band_sweep             RUN_BAND_SWEEP=0
+[00:05:45.383,178] <inf> test_report: ---------------------------------------------------------
+[00:05:45.383,209] <inf> test_report: === CHIP 1b62399045bf9c64  totals: PASS=12  FAIL=0  INFO=2  SKIP=1 ===
+[00:05:45.383,209] <inf> test_report: =========================================================
+
+12 / 12 PASS (counting the GNSS as PASS — recorded as INFO because the
+test_report tracks GNSS as informational since fix time varies).
+
+Notable: GNSS cold-start fix in ~5 minutes with offline mode (GNSS_ASSISTED=0,
+no nRF Cloud A-GNSS), passive U.FL patch antenna, indoor environment.
+
+Last functional block of the bring-up to be validated. EVT2 is now
+fully functional across every subsystem: cellular (LTE-M + NB-IoT),
+GNSS, Wi-Fi, BLE (handed off to L15), PMIC, IMU (motion + WHO_AM_I),
+flash (raw-SPIM3-HAL workaround for the Zephyr driver bug), inter-MCU
+sw-lpuart link.
+
+Compare to evt2_full_demo_pass_2026-05-27.txt for the version without
+GNSS — same board, same firmware revision, just RUN_GNSS_PROBE flipped
+from 0 to 1.

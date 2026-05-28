@@ -46,7 +46,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
  * and a cold first fix can take minutes). Flip to 1 + reflash when
  * validating the antenna/LNA path outdoors.
  */
-#define RUN_GNSS_PROBE       0
+#define RUN_GNSS_PROBE       1
 #define GNSS_PROBE_DURATION  300
 
 /* GNSS assistance mode. 1 = assisted (A-GNSS): fetch assistance from
