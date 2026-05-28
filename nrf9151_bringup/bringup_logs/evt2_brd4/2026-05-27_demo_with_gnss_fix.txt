@@ -1,0 +1,41 @@
+EVT2 BRD #4  (CHIP ID efcc0eb933bc2550) — second run, GNSS FIX caught
+("board#3" in the firmware's BOARD_NUMBER field is the firmware-set
+counter, not the physical board number — this is physically EVT2 #4.)
+
+Re-run after the first capture (2026-05-27_demo_with_gnss.txt) where
+the GNSS cold-start fix didn't land in the 300s window and NB-IoT
+attach timed out at 120s. This run grabs both:
+
+  gnss  best_cn0=41.4 dB-Hz, fix=YES   (was 40.0 dB-Hz, fix=no)
+  nbiot 12s attach, RSRP -85 dBm        (was timeout at 120s)
+
+All 11 functional tests green. Same chip, same firmware, same antenna
+— the previous miss was purely environmental (cold-start TTFF window
++ slow NB-IoT carrier reaction).
+
+[00:05:49.017,425] <inf> test_report: =========================================================
+[00:05:49.017,456] <inf> test_report: === CHIP ID efcc0eb933bc2550 ===
+[00:05:49.017,486] <inf> test_report: === board#3  fw=0.15.0-step16-testreport  TEST SUMMARY ===
+[00:05:49.017,517] <inf> test_report: =========================================================
+[00:05:49.017,547] <inf> test_report:   [PASS] modem_init             fw=nrf91x1_2.0.4
+[00:05:49.017,608] <inf> test_report:   [INFO] attest_token           printed to RTT
+[00:05:49.017,669] <inf> test_report:   [INFO] gnss                   max_SV=12  best_cn0=41.4 dB-Hz  fix=YES
+[00:05:49.017,730] <inf> test_report:   [PASS] lte_m_attach           3s, RSRP -100 dBm
+[00:05:49.017,761] <inf> test_report:   [PASS] nbiot_attach           12s, RSRP -85 dBm
+[00:05:49.017,822] <inf> test_report:   [PASS] i2c2                   2 ACKs total, npm1300@0x6b=yes
+[00:05:49.017,883] <inf> test_report:   [PASS] npm1300                VBAT=3.701 V
+[00:05:49.017,913] <inf> test_report:   [PASS] spi3_flash             JEDEC ef 40 18
+[00:05:49.017,974] <inf> test_report:   [PASS] i2c_imu                WHO_AM_I=0x6c
+[00:05:49.018,035] <inf> test_report:   [PASS] i2c_imu_accel          avg|g|=9.89 m/s2 (X=0.34 Y=0.74 Z=9.86, n=100)
+[00:05:49.018,066] <inf> test_report:   [PASS] wifi                   30 APs, best RSSI -48 dBm
+[00:05:49.018,127] <inf> test_report:   [PASS] wifi_off               BUCK_EN + IOVDD_CTL low — chip unpowered
+[00:05:49.018,188] <inf> test_report:   [PASS] ble_trigger            L15: palroc-l15-b47adf
+[00:05:49.018,249] <inf> test_report:   [SKIP] band_sweep             RUN_BAND_SWEEP=0
+[00:05:49.018,249] <inf> test_report: ---------------------------------------------------------
+[00:05:49.018,280] <inf> test_report: === CHIP efcc0eb933bc2550  totals: PASS=11  FAIL=0  INFO=2  SKIP=1 ===
+[00:05:49.018,280] <inf> test_report: =========================================================
+
+11 / 11 PASS, 0 FAIL — including GNSS fix and NB-IoT attach.
+
+This closes the 5-board cohort: every physical EVT2 board now has a
+captured all-PASS log with full GNSS cold-start fix in the archive.
