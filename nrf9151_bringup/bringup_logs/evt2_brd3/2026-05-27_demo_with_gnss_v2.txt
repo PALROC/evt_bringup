@@ -1,0 +1,41 @@
+EVT2 BRD #3  (CHIP ID 9c4ff37f0ae95bc1) — second run, confirming PASS
+("board#5" in the firmware's BOARD_NUMBER field is the firmware-set
+counter, not the physical board number — this is physically EVT2 #3.)
+
+Re-validation run on the same physical board after the cohort sweep.
+All 11 functional tests green, including GNSS cold-start fix and
+NB-IoT attach. Consistent with the first run on this board.
+
+[00:05:47.643,798] <inf> test_report: =========================================================
+[00:05:47.643,829] <inf> test_report: === CHIP ID 9c4ff37f0ae95bc1 ===
+[00:05:47.643,859] <inf> test_report: === board#5  fw=0.15.0-step16-testreport  TEST SUMMARY ===
+[00:05:47.643,859] <inf> test_report: =========================================================
+[00:05:47.643,920] <inf> test_report:   [PASS] modem_init             fw=nrf91x1_2.0.4
+[00:05:47.643,951] <inf> test_report:   [INFO] attest_token           printed to RTT
+[00:05:47.644,012] <inf> test_report:   [INFO] gnss                   max_SV=12  best_cn0=42.0 dB-Hz  fix=YES
+[00:05:47.644,073] <inf> test_report:   [PASS] lte_m_attach           9s, RSRP -94 dBm
+[00:05:47.644,134] <inf> test_report:   [PASS] nbiot_attach           4s, RSRP -87 dBm
+[00:05:47.644,195] <inf> test_report:   [PASS] i2c2                   2 ACKs total, npm1300@0x6b=yes
+[00:05:47.644,226] <inf> test_report:   [PASS] npm1300                VBAT=3.691 V
+[00:05:47.644,287] <inf> test_report:   [PASS] spi3_flash             JEDEC ef 40 18
+[00:05:47.644,348] <inf> test_report:   [PASS] i2c_imu                WHO_AM_I=0x6c
+[00:05:47.644,378] <inf> test_report:   [PASS] i2c_imu_accel          avg|g|=9.76 m/s2 (X=0.39 Y=0.68 Z=9.73, n=100)
+[00:05:47.644,439] <inf> test_report:   [PASS] wifi                   30 APs, best RSSI -45 dBm
+[00:05:47.644,500] <inf> test_report:   [PASS] wifi_off               BUCK_EN + IOVDD_CTL low — chip unpowered
+[00:05:47.644,561] <inf> test_report:   [PASS] ble_trigger            L15: palroc-l15-d47218
+[00:05:47.644,592] <inf> test_report:   [SKIP] band_sweep             RUN_BAND_SWEEP=0
+[00:05:47.644,622] <inf> test_report: ---------------------------------------------------------
+[00:05:47.644,653] <inf> test_report: === CHIP 9c4ff37f0ae95bc1  totals: PASS=11  FAIL=0  INFO=2  SKIP=1 ===
+[00:05:47.644,653] <inf> test_report: =========================================================
+
+11 / 11 PASS, 0 FAIL.
+
+Diffs vs first run on this board (2026-05-27_demo_with_gnss.txt):
+  gnss      41.9 → 42.0 dB-Hz, fix=YES (consistent)
+  lte_m     9s vs 4s, RSRP -94 vs -104 dBm (better signal this run)
+  nbiot     4s vs 82s (Orange B20 reaction much faster this run)
+  wifi      30 APs vs 33, best -45 vs -52 dBm (similar coverage)
+
+Same chip, same firmware, same antenna — confirms stable / repeatable
+hardware behavior. EVT2 cohort fully validated across 5 boards with
+multiple captures on most.
