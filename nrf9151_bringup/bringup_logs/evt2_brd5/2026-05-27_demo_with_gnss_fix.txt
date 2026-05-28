@@ -1,0 +1,43 @@
+EVT2 BRD #5  (CHIP ID 9cb8ea24bb7b8f12) — second run, GNSS FIX caught
+("board#2" in the firmware's BOARD_NUMBER field is the firmware-set
+counter, not the physical board number — this is physically EVT2 #5.)
+
+Second run on the same physical board. The first run earlier today
+(see 2026-05-27_demo_with_gnss.txt) tracked 12 SVs at 41.5 dB-Hz but
+the cold-start fix didn't land within the 300s window. This run
+captures the cold-start fix with all-green tests across the board.
+
+[00:05:46.643,371] <inf> test_report: =========================================================
+[00:05:46.643,432] <inf> test_report: === CHIP ID 9cb8ea24bb7b8f12 ===
+[00:05:46.643,463] <inf> test_report: === board#2  fw=0.15.0-step16-testreport  TEST SUMMARY ===
+[00:05:46.643,463] <inf> test_report: =========================================================
+[00:05:46.643,524] <inf> test_report:   [PASS] modem_init             fw=nrf91x1_2.0.4
+[00:05:46.643,554] <inf> test_report:   [INFO] attest_token           printed to RTT
+[00:05:46.643,615] <inf> test_report:   [INFO] gnss                   max_SV=12  best_cn0=42.5 dB-Hz  fix=YES
+[00:05:46.643,676] <inf> test_report:   [PASS] lte_m_attach           6s, RSRP -86 dBm
+[00:05:46.643,737] <inf> test_report:   [PASS] nbiot_attach           5s, RSRP -83 dBm
+[00:05:46.643,768] <inf> test_report:   [PASS] i2c2                   2 ACKs total, npm1300@0x6b=yes
+[00:05:46.643,829] <inf> test_report:   [PASS] npm1300                VBAT=3.706 V
+[00:05:46.643,890] <inf> test_report:   [PASS] spi3_flash             JEDEC ef 40 18
+[00:05:46.643,920] <inf> test_report:   [PASS] i2c_imu                WHO_AM_I=0x6c
+[00:05:46.643,981] <inf> test_report:   [PASS] i2c_imu_accel          avg|g|=9.91 m/s2 (X=0.28 Y=0.67 Z=9.88, n=100)
+[00:05:46.644,042] <inf> test_report:   [PASS] wifi                   31 APs, best RSSI -50 dBm
+[00:05:46.644,104] <inf> test_report:   [PASS] wifi_off               BUCK_EN + IOVDD_CTL low — chip unpowered
+[00:05:46.644,134] <inf> test_report:   [PASS] ble_trigger            L15: palroc-l15-ec01ea
+[00:05:46.644,195] <inf> test_report:   [SKIP] band_sweep             RUN_BAND_SWEEP=0
+[00:05:46.644,195] <inf> test_report: ---------------------------------------------------------
+[00:05:46.644,226] <inf> test_report: === CHIP 9cb8ea24bb7b8f12  totals: PASS=11  FAIL=0  INFO=2  SKIP=1 ===
+[00:05:46.644,256] <inf> test_report: =========================================================
+
+11 / 11 PASS, 0 FAIL — including GNSS cold-start fix this time.
+
+Diffs vs first run on this board:
+  gnss      41.5 → 42.5 dB-Hz, fix=no → fix=YES   ← caught the fix
+  lte_m     -101 → -86 dBm                         (better signal this run)
+  nbiot     13s → 5s                               (Orange B20 reaction faster)
+  wifi      24 → 31 APs                            (more APs in range)
+
+Same chip, same firmware, same antenna. The improvements are all
+environmental (sky view, carrier reaction, AP visibility). What this
+confirms: every brd5 first-run was already-healthy hardware; the
+GNSS no-fix on the first capture was purely TTFF window timing.
