@@ -61,7 +61,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
  * cert is installed, so it's safe to leave on). The device must already
  * be claimed on nRF Cloud with an auto-onboarding rule that queues the
  * cert commands. Set to 0 to skip provisioning entirely. */
-#define RUN_PROVISIONING     1
+#define RUN_PROVISIONING     0
 
 /* SPI3 bus contention test: the nRF54L15 shares SPI3 lines (SCK/MOSI/MISO)
  * with the W25Q128JV flash and LSM6DSO IMU on this board. If the L15 is
@@ -139,7 +139,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
  * string on the same board.
  * ====================================================================
  */
-#define BOARD_NUMBER       4
+#define BOARD_NUMBER       1
 #define FW_VERSION_STRING  "0.15.0-step16-testreport"
 
 /* Gate the whole probe sequence behind a Hall-2 press so the demo starts
