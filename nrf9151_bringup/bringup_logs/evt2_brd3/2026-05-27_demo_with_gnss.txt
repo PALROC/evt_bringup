@@ -1,0 +1,47 @@
+EVT2 BRD #3  (CHIP ID 9c4ff37f0ae95bc1)
+("board#5" in the firmware's BOARD_NUMBER field is the firmware-set
+counter, not the physical board number — this is physically EVT2 #3,
+the third EVT2 unit we've validated.)
+
+First-run PASS for this board on the demo with GNSS enabled. All 11
+functional tests green on the first boot. Same firmware
+(0.15.0-step16-testreport) as brd1 and brd2; same build, just
+programmed onto a third SoC.
+
+[00:07:06.149,536] <inf> test_report: =========================================================
+[00:07:06.149,566] <inf> test_report: === CHIP ID 9c4ff37f0ae95bc1 ===
+[00:07:06.149,597] <inf> test_report: === board#5  fw=0.15.0-step16-testreport  TEST SUMMARY ===
+[00:07:06.149,597] <inf> test_report: =========================================================
+[00:07:06.149,658] <inf> test_report:   [PASS] modem_init             fw=nrf91x1_2.0.4
+[00:07:06.149,688] <inf> test_report:   [INFO] attest_token           printed to RTT
+[00:07:06.149,749] <inf> test_report:   [INFO] gnss                   max_SV=12  best_cn0=41.9 dB-Hz  fix=YES
+[00:07:06.149,810] <inf> test_report:   [PASS] lte_m_attach           4s, RSRP -104 dBm
+[00:07:06.149,871] <inf> test_report:   [PASS] nbiot_attach           82s, RSRP -87 dBm
+[00:07:06.149,932] <inf> test_report:   [PASS] i2c2                   2 ACKs total, npm1300@0x6b=yes
+[00:07:06.149,963] <inf> test_report:   [PASS] npm1300                VBAT=3.730 V
+[00:07:06.150,024] <inf> test_report:   [PASS] spi3_flash             JEDEC ef 40 18
+[00:07:06.150,085] <inf> test_report:   [PASS] i2c_imu                WHO_AM_I=0x6c
+[00:07:06.150,115] <inf> test_report:   [PASS] i2c_imu_accel          avg|g|=9.75 m/s2 (X=0.54 Y=0.53 Z=9.72, n=100)
+[00:07:06.150,177] <inf> test_report:   [PASS] wifi                   33 APs, best RSSI -52 dBm
+[00:07:06.150,238] <inf> test_report:   [PASS] wifi_off               BUCK_EN + IOVDD_CTL low — chip unpowered
+[00:07:06.150,299] <inf> test_report:   [PASS] ble_trigger            L15: palroc-l15-d47218
+[00:07:06.150,329] <inf> test_report:   [SKIP] band_sweep             RUN_BAND_SWEEP=0
+[00:07:06.150,360] <inf> test_report: ---------------------------------------------------------
+[00:07:06.150,390] <inf> test_report: === CHIP 9c4ff37f0ae95bc1  totals: PASS=11  FAIL=0  INFO=2  SKIP=1 ===
+[00:07:06.150,390] <inf> test_report: =========================================================
+
+11 / 11 PASS, 0 FAIL.
+
+Notable: best_cn0=41.9 dB-Hz (matches brd1 v2 and brd2's 42.7 — all
+three boards land in the "good" 41-43 dB-Hz range, consistent with
+the same passive U.FL antenna).
+
+NB-IoT attach took 82 s on this board (vs 5-8 s on brd1/brd2). That's
+within spec for NB-IoT on the Orange B20 carrier we're locked to (per
+project_cellular_test_env.md, NB-IoT attach is ~80 s typical), so not
+a board issue. Earlier-board attach times happened to be fast; brd3
+got a more realistic typical attach.
+
+Wi-Fi found 33 APs at best -52 dBm — strongest Wi-Fi reception of
+the three boards. Possibly antenna placement / orientation; all
+three boards' Wi-Fi paths are functional.
