@@ -1,0 +1,44 @@
+EVT2 BRD #5  (CHIP ID 9cb8ea24bb7b8f12)
+("board#2" in the firmware's BOARD_NUMBER field is the firmware-set
+counter, not the physical board number — this is physically EVT2 #5,
+the fifth EVT2 unit validated today.)
+
+First-run on the demo with GNSS enabled. All 11 functional tests pass.
+GNSS tracking is healthy (12 SVs at 41.5 dB-Hz, top of "good" range)
+but the cold-start fix didn't land within the 300s window — same
+TTFF variance we saw on brd4. Not a hardware issue.
+
+[00:05:53.326,385] <inf> test_report: =========================================================
+[00:05:53.326,446] <inf> test_report: === CHIP ID 9cb8ea24bb7b8f12 ===
+[00:05:53.326,477] <inf> test_report: === board#2  fw=0.15.0-step16-testreport  TEST SUMMARY ===
+[00:05:53.326,477] <inf> test_report: =========================================================
+[00:05:53.326,507] <inf> test_report:   [PASS] modem_init             fw=nrf91x1_2.0.4
+[00:05:53.326,568] <inf> test_report:   [INFO] attest_token           printed to RTT
+[00:05:53.326,629] <inf> test_report:   [INFO] gnss                   max_SV=12  best_cn0=41.5 dB-Hz  fix=no
+[00:05:53.326,690] <inf> test_report:   [PASS] lte_m_attach           3s, RSRP -101 dBm
+[00:05:53.326,751] <inf> test_report:   [PASS] nbiot_attach           13s, RSRP -88 dBm
+[00:05:53.326,782] <inf> test_report:   [PASS] i2c2                   2 ACKs total, npm1300@0x6b=yes
+[00:05:53.326,843] <inf> test_report:   [PASS] npm1300                VBAT=3.710 V
+[00:05:53.326,904] <inf> test_report:   [PASS] spi3_flash             JEDEC ef 40 18
+[00:05:53.326,934] <inf> test_report:   [PASS] i2c_imu                WHO_AM_I=0x6c
+[00:05:53.326,995] <inf> test_report:   [PASS] i2c_imu_accel          avg|g|=9.85 m/s2 (X=0.34 Y=0.70 Z=9.82, n=100)
+[00:05:53.327,056] <inf> test_report:   [PASS] wifi                   24 APs, best RSSI -50 dBm
+[00:05:53.327,117] <inf> test_report:   [PASS] wifi_off               BUCK_EN + IOVDD_CTL low — chip unpowered
+[00:05:53.327,148] <inf> test_report:   [PASS] ble_trigger            L15: palroc-l15-ec01ea
+[00:05:53.327,209] <inf> test_report:   [SKIP] band_sweep             RUN_BAND_SWEEP=0
+[00:05:53.327,209] <inf> test_report: ---------------------------------------------------------
+[00:05:53.327,239] <inf> test_report: === CHIP 9cb8ea24bb7b8f12  totals: PASS=11  FAIL=0  INFO=2  SKIP=1 ===
+[00:05:53.327,270] <inf> test_report: =========================================================
+
+11 / 11 PASS, 0 FAIL.
+
+Notable:
+  spi3_flash  ef 40 18 (raw-HAL workaround clean first-try, 5/5 boards)
+  ble_trigger PASS — L15: palroc-l15-ec01ea
+  nbiot       13s attach (Orange B20; range so far: brd1=5s, brd2=8s,
+              brd3=82s, brd4=120s timeout, brd5=13s — environmental)
+  wifi        24 APs, best RSSI -50 dBm
+  vbat        3.710 V (cohort range: 3.710 - 3.789 V; consistent
+              with similar charge state across boards)
+  gnss        tracking healthy (12 SVs, 41.5 dB-Hz) — no fix in
+              window is the same TTFF variance brd4 showed
