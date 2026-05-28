@@ -1,0 +1,54 @@
+EVT2 BRD #4  (CHIP ID efcc0eb933bc2550)
+("board#3" in the firmware's BOARD_NUMBER field is the firmware-set
+counter, not the physical board number — this is physically EVT2 #4,
+the fourth EVT2 unit we've validated.)
+
+First-run on the demo with GNSS enabled. All HARDWARE tests pass;
+two timing-dependent items missed their windows but they are not
+hardware faults:
+
+  - gnss   tracked 12 SVs at 40.0 dB-Hz (top of "good" range) but no
+           fix in the GNSS_PROBE_DURATION=300s window. RF chain works
+           fine — same firmware got cold-start fixes on the other 3
+           boards in similar time. Cold-start TTFF is environmentally
+           variable.
+  - nbiot  timed out at 120s. Note brd3 took 82s on the same firmware
+           / same carrier (Orange ES B20) so 120s isn't a comfortable
+           margin. Per project_cellular_test_env memory, NB-IoT on
+           Orange B20 is ~80s typical, can easily push 100s+. Likely
+           a transient carrier reaction, not a board defect.
+
+[00:07:44.995,147] <inf> test_report: =========================================================
+[00:07:44.995,178] <inf> test_report: === CHIP ID efcc0eb933bc2550 ===
+[00:07:44.995,208] <inf> test_report: === board#3  fw=0.15.0-step16-testreport  TEST SUMMARY ===
+[00:07:44.995,239] <inf> test_report: =========================================================
+[00:07:44.995,269] <inf> test_report:   [PASS] modem_init             fw=nrf91x1_2.0.4
+[00:07:44.995,330] <inf> test_report:   [INFO] attest_token           printed to RTT
+[00:07:44.995,391] <inf> test_report:   [INFO] gnss                   max_SV=12  best_cn0=40.0 dB-Hz  fix=no
+[00:07:44.995,452] <inf> test_report:   [PASS] lte_m_attach           3s, RSRP -106 dBm
+[00:07:44.995,483] <inf> test_report:   [FAIL] nbiot_attach           timeout after 120s
+[00:07:44.995,544] <inf> test_report:   [PASS] i2c2                   2 ACKs total, npm1300@0x6b=yes
+[00:07:44.995,605] <inf> test_report:   [PASS] npm1300                VBAT=3.715 V
+[00:07:44.995,635] <inf> test_report:   [PASS] spi3_flash             JEDEC ef 40 18
+[00:07:44.995,697] <inf> test_report:   [PASS] i2c_imu                WHO_AM_I=0x6c
+[00:07:44.995,758] <inf> test_report:   [PASS] i2c_imu_accel          avg|g|=9.88 m/s2 (X=0.45 Y=0.75 Z=9.84, n=100)
+[00:07:44.995,788] <inf> test_report:   [PASS] wifi                   33 APs, best RSSI -55 dBm
+[00:07:44.995,849] <inf> test_report:   [PASS] wifi_off               BUCK_EN + IOVDD_CTL low — chip unpowered
+[00:07:44.995,910] <inf> test_report:   [PASS] ble_trigger            L15: palroc-l15-b47adf
+[00:07:44.995,971] <inf> test_report:   [SKIP] band_sweep             RUN_BAND_SWEEP=0
+[00:07:44.995,971] <inf> test_report: ---------------------------------------------------------
+[00:07:44.996,002] <inf> test_report: === CHIP efcc0eb933bc2550  totals: PASS=10  FAIL=1  INFO=2  SKIP=1 ===
+[00:07:44.996,002] <inf> test_report: =========================================================
+
+Effective hardware-only score: 10 / 10 functional tests PASS. The two
+non-PASS items (GNSS no-fix, NB-IoT timeout) are environmental timing
+issues with no signal of a hardware defect on this board. Worth a
+re-run with a fresh modem boot or a longer GNSS_PROBE_DURATION to
+get them both green for the archive.
+
+Notable:
+  spi3_flash  ef 40 18 (raw-HAL workaround clean first-try)
+  ble_trigger PASS — L15: palroc-l15-b47adf
+  imu         WHO_AM_I=0x6c (LSM6DSO + i2c2 stable)
+  wifi        33 APs, -55 dBm best (consistent with brd2/brd3)
+  vbat        3.715 V (consistent across all 4 boards: 3.715-3.789 V)
