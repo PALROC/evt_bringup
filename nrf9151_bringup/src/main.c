@@ -139,7 +139,7 @@ LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
  * string on the same board.
  * ====================================================================
  */
-#define BOARD_NUMBER       1
+#define BOARD_NUMBER       5
 #define FW_VERSION_STRING  "0.15.0-step16-testreport"
 
 /* Gate the whole probe sequence behind a Hall-2 press so the demo starts

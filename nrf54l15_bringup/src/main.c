@@ -123,7 +123,7 @@ static void on_uart_line(const char *line)
  * test_summary.md record so per-board comparisons are easy.
  * ====================================================================
  */
-#define BOARD_NUMBER       3
+#define BOARD_NUMBER       5
 #define FW_VERSION_STRING  "0.3.0-l15-rffe-enable"
 
 /* Shared i²c2 bus with the 9151:
